@@ -41,6 +41,7 @@
 #define DEFAULT_P2P_GO_CTWINDOW 0
 #define DEFAULT_WPA_RSC_RELAXATION 1
 #define DEFAULT_MBO_CELL_CAPA MBO_CELL_CAPA_NOT_SUPPORTED
+#define DEFAULT_DISASSOC_IMMINENT_RSSI_THRESHOLD -75
 
 #include "config_ssid.h"
 #include "wps/wps.h"
@@ -1039,7 +1040,8 @@ struct wpa_config {
 	 *
 	 * By default, PMF is disabled unless enabled by the per-network
 	 * ieee80211w=1 or ieee80211w=2 parameter. pmf=1/2 can be used to change
-	 * this default behavior.
+	 * this default behavior for RSN network (this is not applicable for
+	 * non-RSN cases).
 	 */
 	enum mfp_options pmf;
 
@@ -1093,6 +1095,15 @@ struct wpa_config {
 	 * sched_scan_interval -  schedule scan interval
 	 */
 	unsigned int sched_scan_interval;
+
+	/**
+	 * sched_scan_start_delay - Schedule scan start delay before first scan
+	 *
+	 * Delay (in seconds) before scheduling first scan plan cycle. The
+	 * driver may ignore this parameter and start immediately (or at any
+	 * other time), if this feature is not supported.
+	 */
+	unsigned int sched_scan_start_delay;
 
 	/**
 	 * tdls_external_control - External control for TDLS setup requests
@@ -1290,7 +1301,64 @@ struct wpa_config {
 	 * mbo_cell_capa - Cellular capabilities for MBO
 	 */
 	enum mbo_cellular_capa mbo_cell_capa;
+
+	/**
+	 * disassoc_imminent_rssi_threshold - RSSI threshold of candidate AP
+	 * when disassociation imminent is set.
+	 */
+	 int disassoc_imminent_rssi_threshold;
 #endif /* CONFIG_MBO */
+
+	/**
+	 * gas_address3 - GAS Address3 field behavior
+	 *
+	 * Values:
+	 * 0 - P2P specification (Address3 = AP BSSID)
+	 * 1 = IEEE 802.11 standard compliant (Address3 = Wildcard BSSID when
+	 *	sent to not-associated AP; if associated, AP BSSID)
+	 */
+	int gas_address3;
+
+	/**
+	 * ftm_responder - Publish FTM (fine timing measurement)
+	 * responder functionality
+	 *
+	 * Values:
+	 * 0 - do not publish FTM responder functionality (Default)
+	 * 1 - publish FTM responder functionality in
+	 *	bit 70 of Extended Capabilities element
+	 * Note, actual FTM responder operation is managed outside
+	 * wpa_supplicant.
+	 */
+	int ftm_responder;
+
+	/**
+	 * ftm_initiator - Publish FTM (fine timing measurement)
+	 * initiator functionality
+	 *
+	 * Values:
+	 * 0 - do not publish FTM initiator functionality (Default)
+	 * 1 - publish FTM initiator functionality in
+	 *	bit 71 of Extended Capabilities element
+	 * Note, actual FTM initiator operation is managed outside
+	 * wpa_supplicant.
+	 */
+	int ftm_initiator;
+
+	/**
+	 * gas_rand_addr_lifetime - Lifetime of random MAC address for ANQP in
+	 *	seconds
+	 */
+	unsigned int gas_rand_addr_lifetime;
+
+	/**
+	 * gas_rand_mac_addr - GAS MAC address policy
+	 *
+	 * 0 = use permanent MAC address
+	 * 1 = use random MAC address
+	 * 2 = like 1, but maintain OUI (with local admin bit set)
+	 */
+	int gas_rand_mac_addr;
 };
 
 

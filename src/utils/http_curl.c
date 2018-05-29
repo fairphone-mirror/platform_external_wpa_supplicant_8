@@ -486,12 +486,11 @@ static void add_logo(struct http_ctx *ctx, struct http_cert *hcert,
 		return;
 
 	n->hash_len = ASN1_STRING_length(hash->hashValue);
-	n->hash = os_malloc(n->hash_len);
+	n->hash = os_memdup(ASN1_STRING_data(hash->hashValue), n->hash_len);
 	if (n->hash == NULL) {
 		os_free(n->alg_oid);
 		return;
 	}
-	os_memcpy(n->hash, ASN1_STRING_data(hash->hashValue), n->hash_len);
 
 	len = ASN1_STRING_length(uri);
 	n->uri = os_malloc(len + 1);
@@ -857,10 +856,8 @@ static void parse_cert(struct http_ctx *ctx, struct http_cert *hcert,
 	os_memset(hcert, 0, sizeof(*hcert));
 
 	*names = X509_get_ext_d2i(cert, NID_subject_alt_name, NULL, NULL);
-	if (*names) {
+	if (*names)
 		add_alt_names(ctx, hcert, *names);
-		sk_GENERAL_NAME_pop_free(*names, GENERAL_NAME_free);
-	}
 
 	add_logotype_ext(ctx, hcert, cert);
 }

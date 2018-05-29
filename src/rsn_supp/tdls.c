@@ -303,10 +303,9 @@ static int wpa_tdls_tpk_send(struct wpa_sm *sm, const u8 *dest, u8 action_code,
 	peer->sm_tmr.peer_capab = peer_capab;
 	peer->sm_tmr.buf_len = msg_len;
 	os_free(peer->sm_tmr.buf);
-	peer->sm_tmr.buf = os_malloc(msg_len);
+	peer->sm_tmr.buf = os_memdup(msg, msg_len);
 	if (peer->sm_tmr.buf == NULL)
 		return -1;
-	os_memcpy(peer->sm_tmr.buf, msg, msg_len);
 
 	wpa_printf(MSG_DEBUG, "TDLS: Retry timeout registered "
 		   "(action_code=%u)", action_code);
@@ -1220,9 +1219,10 @@ skip_ies:
 
 #ifdef CONFIG_TDLS_TESTING
 	if (tdls_testing & TDLS_TESTING_DIFF_BSSID) {
+		struct wpa_tdls_lnkid *l = (struct wpa_tdls_lnkid *) pos;
+
 		wpa_printf(MSG_DEBUG, "TDLS: Testing - use incorrect BSSID in "
 			   "Link Identifier");
-		struct wpa_tdls_lnkid *l = (struct wpa_tdls_lnkid *) pos;
 		wpa_tdls_linkid(sm, peer, l);
 		l->bssid[5] ^= 0x01;
 		pos += sizeof(*l);
@@ -2912,14 +2912,14 @@ void wpa_tdls_disassoc(struct wpa_sm *sm)
 static int wpa_tdls_prohibited(struct ieee802_11_elems *elems)
 {
 	/* bit 38 - TDLS Prohibited */
-	return !!(elems->ext_capab[2 + 4] & 0x40);
+	return !!(elems->ext_capab[4] & 0x40);
 }
 
 
 static int wpa_tdls_chan_switch_prohibited(struct ieee802_11_elems *elems)
 {
 	/* bit 39 - TDLS Channel Switch Prohibited */
-	return !!(elems->ext_capab[2 + 4] & 0x80);
+	return !!(elems->ext_capab[4] & 0x80);
 }
 
 
@@ -2932,7 +2932,7 @@ void wpa_tdls_ap_ies(struct wpa_sm *sm, const u8 *ies, size_t len)
 
 	if (ies == NULL ||
 	    ieee802_11_parse_elems(ies, len, &elems, 0) == ParseFailed ||
-	    elems.ext_capab == NULL || elems.ext_capab_len < 2 + 5)
+	    elems.ext_capab == NULL || elems.ext_capab_len < 5)
 		return;
 
 	sm->tdls_prohibited = wpa_tdls_prohibited(&elems);
@@ -2951,7 +2951,7 @@ void wpa_tdls_assoc_resp_ies(struct wpa_sm *sm, const u8 *ies, size_t len)
 
 	if (ies == NULL ||
 	    ieee802_11_parse_elems(ies, len, &elems, 0) == ParseFailed ||
-	    elems.ext_capab == NULL || elems.ext_capab_len < 2 + 5)
+	    elems.ext_capab == NULL || elems.ext_capab_len < 5)
 		return;
 
 	if (!sm->tdls_prohibited && wpa_tdls_prohibited(&elems)) {
