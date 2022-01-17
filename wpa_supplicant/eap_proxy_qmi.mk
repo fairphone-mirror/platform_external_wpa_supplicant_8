@@ -14,10 +14,11 @@ LIB_SHARED_EAP_PROXY := libqmi_cci libqmiservices libidl
 LIB_HEADER_EAP_PROXY := libqmi_common_headers
 LIB_HEADER_EAP_PROXY += libril-qc-qmi-services-headers
 LIB_HEADER_EAP_PROXY += libdataqmiservices_headers_ext
+LIB_HEADER_EAP_PROXY += qmi_framework_headers qmi_header
 
 ifdef CONFIG_EAP_PROXY_MDM_DETECT
 L_CFLAGS += -DCONFIG_EAP_PROXY_MDM_DETECT
-INCLUDES += $(TARGET_OUT_HEADERS)/libmdmdetect/inc
+LIB_HEADER_EAP_PROXY += libmdmdetect_headers
 LIB_SHARED_EAP_PROXY += libmdmdetect
 endif
 
