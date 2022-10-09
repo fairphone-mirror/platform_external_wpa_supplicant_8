@@ -1552,10 +1552,10 @@ static int wpa_supplicant_validate_ie(struct wpa_sm *sm,
 		return -1;
 	}
 
-	if ((ie->wpa_ie && sm->ap_wpa_ie &&
+	if ((ie->wpa_ie && sm->ap_wpa_ie && !sm->adaptive11r_key_mgmt &&
 	     (ie->wpa_ie_len != sm->ap_wpa_ie_len ||
 	      os_memcmp(ie->wpa_ie, sm->ap_wpa_ie, ie->wpa_ie_len) != 0)) ||
-	    (ie->rsn_ie && sm->ap_rsn_ie &&
+	    (ie->rsn_ie && sm->ap_rsn_ie && !sm->adaptive11r_key_mgmt &&
 	     wpa_compare_rsn_ie(wpa_key_mgmt_ft(sm->key_mgmt),
 				sm->ap_rsn_ie, sm->ap_rsn_ie_len,
 				ie->rsn_ie, ie->rsn_ie_len))) {
@@ -2023,6 +2023,13 @@ static int wpa_supplicant_send_2_of_2(struct wpa_sm *sm,
 	struct wpa_eapol_key *reply;
 	u8 *rbuf, *key_mic;
 	size_t kde_len = 0;
+
+#ifdef CONFIG_TESTING_OPTIONS
+	if (sm->disable_eapol_g2_tx) {
+		wpa_printf(MSG_INFO, "TEST: Disable sending EAPOL-Key 2/2");
+		return 0;
+	}
+#endif /* CONFIG_TESTING_OPTIONS */
 
 #ifdef CONFIG_OCV
 	if (wpa_sm_ocv_enabled(sm))
@@ -3381,12 +3388,18 @@ int wpa_sm_set_param(struct wpa_sm *sm, enum wpa_sm_conf_params param,
 	case WPA_PARAM_OCI_FREQ_FILS_ASSOC:
 		sm->oci_freq_override_fils_assoc = value;
 		break;
+	case WPA_PARAM_DISABLE_EAPOL_G2_TX:
+		sm->disable_eapol_g2_tx = value;
+		break;
 #endif /* CONFIG_TESTING_OPTIONS */
 #ifdef CONFIG_DPP2
 	case WPA_PARAM_DPP_PFS:
 		sm->dpp_pfs = value;
 		break;
 #endif /* CONFIG_DPP2 */
+	case WPA_PARAM_ADAPT_FT_KEY_MGMT:
+		sm->adaptive11r_key_mgmt = value;
+		break;
 	default:
 		break;
 	}

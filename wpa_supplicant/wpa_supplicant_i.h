@@ -14,6 +14,7 @@
 #include "common/defs.h"
 #include "common/sae.h"
 #include "common/wpa_ctrl.h"
+#include "common/dpp.h"
 #include "crypto/sha384.h"
 #include "eapol_supp/eapol_supp_sm.h"
 #include "wps/wps_defs.h"
@@ -258,6 +259,15 @@ struct wpa_params {
 	 */
 	int match_iface_count;
 #endif /* CONFIG_MATCH_IFACE */
+
+#ifdef CONFIG_AIDL
+	/**
+	 * aidl_service_name - Service name to use when registering
+	 * with AIDL. For supporting multiple instances of
+	 * wpa_supplicant over AIDL
+	 */
+	char *aidl_service_name;
+#endif /* CONFIG_AIDL */
 };
 
 struct p2p_srv_bonjour {
@@ -607,7 +617,6 @@ struct ipv4_params {
 	u16 dst_port;
 	u8 dscp;
 	u8 protocol;
-	u8 param_mask;
 };
 
 
@@ -619,7 +628,6 @@ struct ipv6_params {
 	u8 dscp;
 	u8 next_header;
 	u8 flow_label[3];
-	u8 param_mask;
 };
 
 
@@ -929,6 +937,7 @@ struct wpa_supplicant {
 	u64 drv_flags2;
 	unsigned int drv_enc;
 	unsigned int drv_rrm_flags;
+	unsigned int drv_max_acl_mac_addrs;
 
 	/*
 	 * A bitmap of supported protocols for probe response offload. See
@@ -965,6 +974,7 @@ struct wpa_supplicant {
 	struct os_reltime pending_eapol_rx_time;
 	u8 pending_eapol_rx_src[ETH_ALEN];
 	unsigned int last_eapol_matches_bssid:1;
+	unsigned int eapol_failed:1;
 	unsigned int eap_expected_failure:1;
 	unsigned int reattach:1; /* reassociation to the same BSS requested */
 	unsigned int mac_addr_changed:1;
@@ -976,11 +986,14 @@ struct wpa_supplicant {
 	unsigned int connection_ht:1;
 	unsigned int connection_vht:1;
 	unsigned int connection_he:1;
+	unsigned int connection_eht:1;
 	unsigned int connection_max_nss_rx:4;
 	unsigned int connection_max_nss_tx:4;
 	unsigned int connection_channel_bandwidth:5;
 	unsigned int disable_mbo_oce:1;
 	unsigned int connection_11b_only:1;
+	unsigned int connection_vht_max_eight_spatial_streams:1;
+	unsigned int connection_twt:1;
 
 	struct os_reltime last_mac_addr_change;
 	int last_mac_addr_style;
@@ -1368,6 +1381,7 @@ struct wpa_supplicant {
 	unsigned int oci_freq_override_fils_assoc;
 	unsigned int oci_freq_override_wnm_sleep;
 	int force_hunting_and_pecking_pwe;
+	unsigned int disable_eapol_g2_tx;
 #endif /* CONFIG_TESTING_OPTIONS */
 
 	struct wmm_ac_assoc_data *wmm_ac_assoc_info;
@@ -1483,6 +1497,7 @@ struct wpa_supplicant {
 	struct dpp_bootstrap_info *dpp_pkex_bi;
 	char *dpp_pkex_code;
 	char *dpp_pkex_identifier;
+	enum dpp_pkex_ver dpp_pkex_ver;
 	char *dpp_pkex_auth_cmd;
 	char *dpp_configurator_params;
 	struct os_reltime dpp_last_init;
@@ -1495,6 +1510,7 @@ struct wpa_supplicant {
 	u8 dpp_last_ssid[SSID_MAX_LEN];
 	size_t dpp_last_ssid_len;
 	bool dpp_conf_backup_received;
+	bool dpp_pkex_wait_auth_req;
 #ifdef CONFIG_DPP2
 	struct dpp_pfs *dpp_pfs;
 	int dpp_pfs_fallback;
@@ -1707,7 +1723,7 @@ void wpa_supplicant_reset_bgscan(struct wpa_supplicant *wpa_s);
 int wpas_mbo_ie(struct wpa_supplicant *wpa_s, u8 *buf, size_t len,
 		int add_oce_capa);
 const u8 * mbo_attr_from_mbo_ie(const u8 *mbo_ie, enum mbo_attr_id attr);
-const u8 * wpas_mbo_get_bss_attr(struct wpa_bss *bss, enum mbo_attr_id attr);
+const u8 * wpas_mbo_check_assoc_disallow(struct wpa_bss *bss);
 void wpas_mbo_check_pmf(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 			struct wpa_ssid *ssid);
 const u8 * mbo_get_attr_from_ies(const u8 *ies, size_t ies_len,
@@ -1883,7 +1899,7 @@ struct wpa_ssid * wpa_scan_res_match(struct wpa_supplicant *wpa_s,
 int wpas_ctrl_iface_get_pref_freq_list_override(struct wpa_supplicant *wpa_s,
 						enum wpa_driver_if_type if_type,
 						unsigned int *num,
-						unsigned int *freq_list);
+						struct weighted_pcl *freq_list);
 
 int wpa_is_fils_supported(struct wpa_supplicant *wpa_s);
 int wpa_is_fils_sk_pfs_supported(struct wpa_supplicant *wpa_s);

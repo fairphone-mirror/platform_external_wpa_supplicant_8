@@ -15,6 +15,7 @@
 #include "utils/common.h"
 #include "utils/eloop.h"
 #include "utils/uuid.h"
+#include "crypto/crypto.h"
 #include "crypto/random.h"
 #include "crypto/tls.h"
 #include "common/version.h"
@@ -686,7 +687,7 @@ int main(int argc, char *argv[])
 #endif /* CONFIG_DPP */
 
 	for (;;) {
-		c = getopt(argc, argv, "b:Bde:f:hi:KP:sSTtu:vg:G:");
+		c = getopt(argc, argv, "b:Bde:f:hi:KP:sSTtu:vg:G:j:");
 		if (c < 0)
 			break;
 		switch (c) {
@@ -725,7 +726,6 @@ int main(int argc, char *argv[])
 		case 'v':
 			show_version();
 			exit(1);
-			break;
 		case 'g':
 			if (hostapd_get_global_ctrl_iface(&interfaces, optarg))
 				return -1;
@@ -760,6 +760,11 @@ int main(int argc, char *argv[])
 							&if_names_size, optarg))
 				goto out;
 			break;
+#ifdef CONFIG_CTRL_IFACE_AIDL
+		case 'j':
+			interfaces.aidl_service_name = strdup(optarg);
+			break;
+#endif
 		default:
 			usage();
 			break;
@@ -821,6 +826,7 @@ int main(int argc, char *argv[])
 		wpa_printf(MSG_WARNING, "Failed to add CLI FST ctrl");
 #endif /* CONFIG_FST && CONFIG_CTRL_IFACE */
 
+    wpa_printf(MSG_ERROR, "debug, set loglevel");
 	/* Allocate and parse configuration for full interface files */
 	for (i = 0; i < interfaces.count; i++) {
 		char *if_name = NULL;
@@ -891,13 +897,13 @@ int main(int argc, char *argv[])
 			goto out;
 	}
 
+	hostapd_global_ctrl_iface_init(&interfaces);
 #ifdef CONFIG_CTRL_IFACE_AIDL
 	if (hostapd_aidl_init(&interfaces)) {
 		wpa_printf(MSG_ERROR, "Failed to initialize AIDL interface");
 		goto out;
 	}
 #endif /* CONFIG_CTRL_IFACE_AIDL */
-	hostapd_global_ctrl_iface_init(&interfaces);
 
 	if (hostapd_global_run(&interfaces, daemonize, pid_file)) {
 		wpa_printf(MSG_ERROR, "Failed to start eloop");
@@ -947,6 +953,7 @@ int main(int argc, char *argv[])
 
 	fst_global_deinit();
 
+	crypto_unload();
 	os_program_deinit();
 
 	return ret;
