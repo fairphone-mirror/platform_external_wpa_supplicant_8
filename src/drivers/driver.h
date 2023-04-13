@@ -710,6 +710,21 @@ struct wpa_driver_auth_params {
 	 * auth_data_len - Length of auth_data buffer in octets
 	 */
 	size_t auth_data_len;
+
+	/**
+	 * mld - Establish an MLD connection
+	 */
+	bool mld;
+
+	/**
+	 * mld_link_id - The link ID of the MLD AP to which we are associating
+	 */
+	u8 mld_link_id;
+
+	/**
+	 * The MLD AP address
+	 */
+	const u8 *ap_mld_addr;
 };
 
 /**
@@ -871,6 +886,38 @@ struct wpa_driver_sta_auth_params {
 	 * fils_kek_len - Length of the fils_kek in octets (required for FILS)
 	 */
 	size_t fils_kek_len;
+};
+
+struct wpa_driver_mld_params {
+	/**
+	 * mld_addr - AP's MLD address
+	 */
+	const u8 *mld_addr;
+
+	/**
+	 * valid_links - The valid links including the association link
+	 */
+	u16 valid_links;
+
+	/**
+	 * assoc_link_id - The link on which the association is performed
+	 */
+	u8 assoc_link_id;
+
+	/**
+	 * mld_links - Link information
+	 *
+	 * Should include information on all the requested links for association
+	 * including the link on which the association should take place.
+	 * For the association link, the ies and ies_len should be NULL and
+	 * 0 respectively.
+	 */
+	struct {
+		int freq;
+		const u8 *bssid;
+		const u8 *ies;
+		size_t ies_len;
+	} mld_links[MAX_NUM_MLD_LINKS];
 };
 
 /**
@@ -1240,7 +1287,18 @@ struct wpa_driver_associate_params {
 	 * 1 = hash-to-element only
 	 * 2 = both hunting-and-pecking loop and hash-to-element enabled
 	 */
-	int sae_pwe;
+	enum sae_pwe sae_pwe;
+
+	/**
+	 * disable_eht - Disable EHT for this connection
+	 */
+	int disable_eht;
+
+	/*
+	 * mld_params - MLD association parameters
+	 */
+	struct wpa_driver_mld_params mld_params;
+
 #ifdef CONFIG_DRIVER_NL80211_BRCM
 	/**
 	 * td_policy - Transition Disable Policy
@@ -1590,7 +1648,7 @@ struct wpa_driver_ap_params {
 	 * 1 = hash-to-element only
 	 * 2 = both hunting-and-pecking loop and hash-to-element enabled
 	 */
-	int sae_pwe;
+	enum sae_pwe sae_pwe;
 
 	/**
 	 * FILS Discovery frame minimum interval in TUs
@@ -1779,6 +1837,12 @@ struct wpa_driver_set_key_params {
 	 * %KEY_FLAG_RX_TX
 	 *  RX/TX key. */
 	enum key_flag key_flag;
+
+	/**
+	 * link_id - MLO Link ID
+	 *
+	 * Set to a valid Link ID (0-14) when applicable, otherwise -1. */
+	int link_id;
 };
 
 enum wpa_driver_if_type {
@@ -2086,6 +2150,8 @@ struct wpa_driver_capa {
  * frames in STA mode
  */
 #define WPA_DRIVER_FLAGS2_PROT_RANGE_NEG_STA	0x0000000000002000ULL
+/** Driver supports MLO in station/AP mode */
+#define WPA_DRIVER_FLAGS2_MLO			0x0000000000004000ULL
 /** Driver supports of adaptive 11r feature */
 #define WPA_DRIVER_FLAGS_ADAPTIVE_11R	        0x8000000000000000ULL
 	u64 flags2;
@@ -2737,7 +2803,9 @@ struct weighted_pcl {
 };
 
 struct driver_sta_mlo_info {
-	u16 valid_links; /* bitmap of valid link IDs */
+	u16 req_links; /* bitmap of requested link IDs */
+	u16 valid_links; /* bitmap of accepted link IDs */
+	u8 assoc_link_id;
 	u8 ap_mld_addr[ETH_ALEN];
 	struct {
 		u8 addr[ETH_ALEN];

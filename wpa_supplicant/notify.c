@@ -4,6 +4,12 @@
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
+ *
+ * Changes from Qualcomm Innovation Center are provided under the following license:
+ *
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
 #include "utils/includes.h"
@@ -16,6 +22,7 @@
 #include "dbus/dbus_common.h"
 #include "dbus/dbus_new.h"
 #include "rsn_supp/wpa.h"
+#include "rsn_supp/pmksa_cache.h"
 #include "fst/fst.h"
 #include "crypto/tls.h"
 #include "bss.h"
@@ -25,6 +32,7 @@
 #include "sme.h"
 #include "notify.h"
 #include "aidl.h"
+#include "vendor_aidl/aidl_vendor.h"
 
 int wpas_notify_supplicant_initialized(struct wpa_global *global)
 {
@@ -42,6 +50,12 @@ int wpas_notify_supplicant_initialized(struct wpa_global *global)
 		return -1;
 #endif /* CONFIG_AIDL */
 
+#ifdef CONFIG_SUPPLICANT_VENDOR_AIDL
+	global->vendor_aidl = wpas_aidl_vendor_init(global);
+	if (!global->vendor_aidl)
+		return -1;
+#endif /* CONFIG_SUPPLICANT_VENDOR_AIDL */
+
 	return 0;
 }
 
@@ -57,6 +71,11 @@ void wpas_notify_supplicant_deinitialized(struct wpa_global *global)
 	if (global->aidl)
 		wpas_aidl_deinit(global->aidl);
 #endif /* CONFIG_AIDL */
+
+#ifdef CONFIG_SUPPLICANT_VENDOR_AIDL
+	if (global->vendor_aidl)
+		wpas_aidl_vendor_deinit(global->vendor_aidl);
+#endif /* CONFIG_SUPPLICANT_VENDOR_AIDL */
 }
 
 
@@ -71,6 +90,11 @@ int wpas_notify_iface_added(struct wpa_supplicant *wpa_s)
 	if (wpas_aidl_register_interface(wpa_s))
 		return -1;
 
+#ifdef CONFIG_SUPPLICANT_VENDOR_AIDL
+	if (wpas_aidl_vendor_register_interface(wpa_s))
+		return -1;
+#endif /* CONFIG_SUPPLICANT_VENDOR_AIDL */
+
 	return 0;
 }
 
@@ -84,6 +108,9 @@ void wpas_notify_iface_removed(struct wpa_supplicant *wpa_s)
 
 	/* HIDL interface wants to keep track of the P2P mgmt iface. */
 	wpas_aidl_unregister_interface(wpa_s);
+#ifdef CONFIG_SUPPLICANT_VENDOR_AIDL
+	wpas_aidl_vendor_unregister_interface(wpa_s);
+#endif /* CONFIG_SUPPLICANT_VENDOR_AIDL */
 }
 
 
@@ -441,11 +468,6 @@ void wpas_notify_network_removed(struct wpa_supplicant *wpa_s,
 		wpas_notify_persistent_group_removed(wpa_s, ssid);
 
 	wpas_p2p_network_removed(wpa_s, ssid);
-
-#ifdef CONFIG_PASN
-	if (wpa_s->pasn.ssid == ssid)
-		wpa_s->pasn.ssid = NULL;
-#endif /* CONFIG_PASN */
 }
 
 
@@ -1235,15 +1257,6 @@ void wpas_notify_dpp_config_rejected(struct wpa_supplicant *wpa_s)
 #endif /* CONFIG_DPP2 */
 }
 
-void wpas_notify_pmk_cache_added(struct wpa_supplicant *wpa_s,
-				 struct rsn_pmksa_cache_entry *entry)
-{
-	if (!wpa_s)
-		return;
-
-	wpas_aidl_notify_pmk_cache_added(wpa_s, entry);
-}
-
 void wpas_notify_transition_disable(struct wpa_supplicant *wpa_s,
 				    struct wpa_ssid *ssid,
 				    u8 bitmap)
@@ -1292,6 +1305,16 @@ void wpas_notify_interworking_select_done(struct wpa_supplicant *wpa_s)
 }
 
 #endif /* CONFIG_INTERWORKING */
+
+
+void wpas_notify_pmk_cache_added(struct wpa_supplicant *wpa_s,
+				 struct rsn_pmksa_cache_entry *entry)
+{
+       if (!wpa_s)
+               return;
+
+       wpas_aidl_notify_pmk_cache_added(wpa_s, entry);
+}
 
 void wpas_notify_eap_method_selected(struct wpa_supplicant *wpa_s,
 			const char* reason_string)

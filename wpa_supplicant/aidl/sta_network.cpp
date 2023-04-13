@@ -1109,6 +1109,8 @@ ndk::ScopedAStatus StaNetwork::setRequirePmfInternal(bool enable)
 	struct wpa_ssid *wpa_ssid = retrieveNetworkPtr();
 	if (enable) {
 		wpa_ssid->ieee80211w = MGMT_FRAME_PROTECTION_REQUIRED;
+	} else {
+		wpa_ssid->ieee80211w = MGMT_FRAME_PROTECTION_OPTIONAL;
 	}
 	resetInternalStateAfterParamsUpdate();
 	return ndk::ScopedAStatus::ok();
@@ -2131,7 +2133,11 @@ ndk::ScopedAStatus StaNetwork::setPmkCacheInternal(const std::vector<uint8_t>& s
 	std::stringstream ss(
 		std::stringstream::in | std::stringstream::out | std::stringstream::binary);
 	ss.write((char *) serializedEntry.data(), std::streamsize(serializedEntry.size()));
-	misc_utils::deserializePmkCacheEntry(ss, new_entry);
+	if (misc_utils::deserializePmkCacheEntry(ss, new_entry) < 0) {
+		os_free(new_entry);
+		return createStatusWithMsg(SupplicantStatusCode::FAILURE_ARGS_INVALID,
+		 "Invalid pmk length");
+	}
 	new_entry->network_ctx = wpa_ssid;
 
 	// If there is an entry has a later expiration, ignore this one.
@@ -2152,10 +2158,19 @@ ndk::ScopedAStatus StaNetwork::setKeyMgmtInternal(
 	KeyMgmtMask mask)
 {
 	uint32_t key_mgmt_mask = static_cast<uint32_t>(mask);
+	struct wpa_supplicant *wpa_s = retrieveIfacePtr();
 	struct wpa_ssid *wpa_ssid = retrieveNetworkPtr();
 	if (key_mgmt_mask & ~kAllowedKeyMgmtMask) {
 		return createStatus(SupplicantStatusCode::FAILURE_ARGS_INVALID);
 	}
+#ifdef CONFIG_SAE
+	struct wpa_driver_capa capa;
+	int res = wpa_drv_get_capa(wpa_s, &capa);
+	if ((res == 0) && (key_mgmt_mask & WPA_KEY_MGMT_SAE) &&
+		(capa.key_mgmt_iftype[WPA_IF_STATION] & WPA_DRIVER_CAPA_KEY_MGMT_SAE_EXT_KEY)) {
+		key_mgmt_mask |= WPA_KEY_MGMT_SAE_EXT_KEY;
+	}
+#endif
 	setFastTransitionKeyMgmt(key_mgmt_mask);
 #ifdef CONFIG_OCV
 	if (!(key_mgmt_mask & WPA_KEY_MGMT_NONE))
@@ -2494,6 +2509,11 @@ void StaNetwork::setFastTransitionKeyMgmt(uint32_t &key_mgmt_mask)
 			(capa.key_mgmt_iftype[WPA_IF_STATION] & WPA_DRIVER_CAPA_KEY_MGMT_FT_SAE)) {
 			key_mgmt_mask |= WPA_KEY_MGMT_FT_SAE;
 		}
+		if ((key_mgmt_mask & WPA_KEY_MGMT_SAE_EXT_KEY) &&
+			(capa.key_mgmt_iftype[WPA_IF_STATION] &
+			    WPA_DRIVER_CAPA_KEY_MGMT_FT_SAE_EXT_KEY)) {
+			key_mgmt_mask |= WPA_KEY_MGMT_FT_SAE_EXT_KEY;
+		}
 #endif
 #ifdef CONFIG_FILS
 		if ((key_mgmt_mask & WPA_KEY_MGMT_FILS_SHA256) &&
@@ -2577,13 +2597,13 @@ ndk::ScopedAStatus StaNetwork::setSaeH2eModeInternal(
 	struct wpa_supplicant *wpa_s = retrieveIfacePtr();
 	switch (mode) {
 	case SaeH2eMode::DISABLED:
-		wpa_s->conf->sae_pwe = 0;
+		wpa_s->conf->sae_pwe = SAE_PWE_HUNT_AND_PECK;
 		break;
 	case SaeH2eMode::H2E_MANDATORY:
-		wpa_s->conf->sae_pwe = 1;
+		wpa_s->conf->sae_pwe = SAE_PWE_HASH_TO_ELEMENT;
 		break;
 	case SaeH2eMode::H2E_OPTIONAL:
-		wpa_s->conf->sae_pwe = 2;
+		wpa_s->conf->sae_pwe = SAE_PWE_BOTH;
 		break;
 	}
 	resetInternalStateAfterParamsUpdate();

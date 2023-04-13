@@ -2088,7 +2088,7 @@ static void wpas_start_wps_go(struct wpa_supplicant *wpa_s,
 		ssid->auth_alg |= WPA_AUTH_ALG_SAE;
 		ssid->key_mgmt = WPA_KEY_MGMT_SAE;
 		ssid->ieee80211w = MGMT_FRAME_PROTECTION_REQUIRED;
-		ssid->sae_pwe = 1;
+		ssid->sae_pwe = SAE_PWE_HASH_TO_ELEMENT;
 		wpa_dbg(wpa_s, MSG_DEBUG, "P2P: Use SAE auth_alg and key_mgmt");
 	} else {
 		p2p_set_6ghz_dev_capab(wpa_s->global->p2p, false);
@@ -3974,8 +3974,7 @@ int wpas_p2p_get_sec_channel_offset_40mhz(struct wpa_supplicant *wpa_s,
 
 	for (op = 0; global_op_class[op].op_class; op++) {
 		const struct oper_class_map *o = &global_op_class[op];
-		u16 ch;
-		int chan = channel;
+		u16 ch = 0;
 
 		/* Allow DFS channels marked as NO_P2P_SUPP to be used with
 		 * driver offloaded DFS. */
@@ -3986,15 +3985,22 @@ int wpas_p2p_get_sec_channel_offset_40mhz(struct wpa_supplicant *wpa_s,
 		     wpa_s->conf->p2p_6ghz_disable))
 			continue;
 
+		/* IEEE Std 802.11ax-2021 26.17.2.3.2: "A 6 GHz-only AP should
+		 * set up the BSS with a primary 20 MHz channel that coincides
+		 * with a preferred scanning channel (PSC)."
+		 * 6 GHz BW40 operation class 132 in wpa_supplicant uses the
+		 * lowest 20 MHz channel for simplicity, so increase ch by 4 to
+		 * match the PSC.
+		 */
 		if (is_6ghz_op_class(o->op_class) && o->bw == BW40 &&
 		    get_6ghz_sec_channel(channel) < 0)
-			chan = channel - 4;
+			ch = 4;
 
-		for (ch = o->min_chan; ch <= o->max_chan; ch += o->inc) {
+		for (ch += o->min_chan; ch <= o->max_chan; ch += o->inc) {
 			if (o->mode != HOSTAPD_MODE_IEEE80211A ||
 			    (o->bw != BW40PLUS && o->bw != BW40MINUS &&
 			     o->bw != BW40) ||
-			    ch != chan)
+			    ch != channel)
 				continue;
 			ret = wpas_p2p_verify_channel(wpa_s, mode, o->op_class,
 						      ch, o->bw);
@@ -8547,6 +8553,10 @@ int wpas_p2p_in_progress(struct wpa_supplicant *wpa_s)
 				"in group formation",
 				wpa_s->global->p2p_group_formation->ifname);
 			ret = 1;
+		} else if (wpa_s->global->p2p_group_formation == wpa_s) {
+			wpa_dbg(wpa_s, MSG_DEBUG,
+				"P2P: Skip Extended Listen timeout and allow scans on current interface for group formation");
+			ret = 2;
 		}
 	}
 
@@ -9736,9 +9746,12 @@ static int wpas_p2p_move_go_csa(struct wpa_supplicant *wpa_s)
 		goto out;
 	}
 
-	if (conf->hw_mode != wpa_s->ap_iface->current_mode->mode) {
-		wpa_dbg(wpa_s, MSG_DEBUG,
-			"P2P CSA: CSA to a different band is not supported");
+	if (conf->hw_mode != wpa_s->ap_iface->current_mode->mode &&
+	    (wpa_s->ap_iface->current_mode->mode != HOSTAPD_MODE_IEEE80211A ||
+	     conf->hw_mode != HOSTAPD_MODE_IEEE80211G)) {
+		wpa_dbg(wpa_s, MSG_INFO,
+			"P2P CSA: CSA from Hardware mode %d to %d is not supported",
+			wpa_s->ap_iface->current_mode->mode, conf->hw_mode);
 		ret = -1;
 		goto out;
 	}

@@ -140,7 +140,7 @@ static struct wpa_bss * wpa_supplicant_get_new_bss(
 	struct wpa_bss *bss = NULL;
 	struct wpa_ssid *ssid = wpa_s->current_ssid;
 
-	if (ssid->ssid_len > 0)
+	if (ssid && ssid->ssid_len > 0)
 		bss = wpa_bss_get(wpa_s, bssid, ssid->ssid, ssid->ssid_len);
 	if (!bss)
 		bss = wpa_bss_get_bssid(wpa_s, bssid);
@@ -183,7 +183,8 @@ static void wpa_supplicant_update_link_bss(struct wpa_supplicant *wpa_s,
 }
 
 
-static int wpa_supplicant_select_config(struct wpa_supplicant *wpa_s)
+static int wpa_supplicant_select_config(struct wpa_supplicant *wpa_s,
+					union wpa_event_data *data)
 {
 	struct wpa_ssid *ssid, *old_ssid;
 	u8 drv_ssid[SSID_MAX_LEN];
@@ -256,8 +257,15 @@ static int wpa_supplicant_select_config(struct wpa_supplicant *wpa_s)
 	if (wpa_key_mgmt_wpa_any(ssid->key_mgmt)) {
 		u8 wpa_ie[80];
 		size_t wpa_ie_len = sizeof(wpa_ie);
+		bool skip_default_rsne;
+
+		/* Do not override RSNE/RSNXE with the default values if the
+		 * driver indicated the actual values used in the
+		 * (Re)Association Request frame. */
+		skip_default_rsne = data && data->assoc_info.req_ies;
 		if (wpa_supplicant_set_suites(wpa_s, NULL, ssid,
-					      wpa_ie, &wpa_ie_len) < 0)
+					      wpa_ie, &wpa_ie_len,
+					      skip_default_rsne) < 0)
 			wpa_dbg(wpa_s, MSG_DEBUG, "Could not set WPA suites");
 	} else {
 		wpa_supplicant_set_non_wpa_policy(wpa_s, ssid);
@@ -301,16 +309,15 @@ void wpa_supplicant_stop_countermeasures(void *eloop_ctx, void *sock_ctx)
 }
 
 
-static void wpas_reset_mlo_info(struct wpa_supplicant *wpa_s)
+void wpas_reset_mlo_info(struct wpa_supplicant *wpa_s)
 {
-	int i;
-
 	if (!wpa_s->valid_links)
 		return;
 
 	wpa_s->valid_links = 0;
-	for (i = 0; i < MAX_NUM_MLD_LINKS; i++)
-		wpa_s->links[i].bss = NULL;
+	wpa_s->mlo_assoc_link_id = 0;
+	os_memset(wpa_s->ap_mld_addr, 0, ETH_ALEN);
+	os_memset(wpa_s->links, 0, sizeof(wpa_s->links));
 }
 
 
@@ -601,7 +608,8 @@ static int wpa_supplicant_ssid_bss_match(struct wpa_supplicant *wpa_s,
 #ifdef CONFIG_WEP
 	int wep_ok;
 #endif /* CONFIG_WEP */
-	bool is_6ghz_bss = is_6ghz_freq(bss->freq);
+	bool is_6ghz_bss_or_mld = is_6ghz_freq(bss->freq) ||
+		!is_zero_ether_addr(bss->mld_addr);
 
 	ret = wpas_wps_ssid_bss_match(wpa_s, ssid, bss);
 	if (ret >= 0)
@@ -616,10 +624,10 @@ static int wpa_supplicant_ssid_bss_match(struct wpa_supplicant *wpa_s,
 #endif /* CONFIG_WEP */
 
 	rsn_ie = wpa_bss_get_ie(bss, WLAN_EID_RSN);
-	if (is_6ghz_bss && !rsn_ie) {
+	if (is_6ghz_bss_or_mld && !rsn_ie) {
 		if (debug_print)
 			wpa_dbg(wpa_s, MSG_DEBUG,
-				"   skip - 6 GHz BSS without RSNE");
+				"   skip - 6 GHz/MLD BSS without RSNE");
 		return 0;
 	}
 
@@ -637,7 +645,7 @@ static int wpa_supplicant_ssid_bss_match(struct wpa_supplicant *wpa_s,
 		if (!ie.has_group)
 			ie.group_cipher = wpa_default_rsn_cipher(bss->freq);
 
-		if (is_6ghz_bss) {
+		if (is_6ghz_bss_or_mld) {
 			/* WEP and TKIP are not allowed on 6 GHz */
 			ie.pairwise_cipher &= ~(WPA_CIPHER_WEP40 |
 						WPA_CIPHER_WEP104 |
@@ -688,12 +696,12 @@ static int wpa_supplicant_ssid_bss_match(struct wpa_supplicant *wpa_s,
 			break;
 		}
 
-		if (is_6ghz_bss) {
+		if (is_6ghz_bss_or_mld) {
 			/* MFPC must be supported on 6 GHz */
 			if (!(ie.capabilities & WPA_CAPABILITY_MFPC)) {
 				if (debug_print)
 					wpa_dbg(wpa_s, MSG_DEBUG,
-						"   skip RSNE - 6 GHz without MFPC");
+						"   skip RSNE - 6 GHz/MLD without MFPC");
 				break;
 			}
 
@@ -733,10 +741,10 @@ static int wpa_supplicant_ssid_bss_match(struct wpa_supplicant *wpa_s,
 		return 1;
 	}
 
-	if (is_6ghz_bss) {
+	if (is_6ghz_bss_or_mld) {
 		if (debug_print)
 			wpa_dbg(wpa_s, MSG_DEBUG,
-				"   skip - 6 GHz BSS without matching RSNE");
+				"   skip - 6 GHz/MLD BSS without matching RSNE");
 		return 0;
 	}
 
@@ -959,7 +967,8 @@ static int rate_match(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid,
 #ifdef CONFIG_SAE
 			if (flagged && ((rate_ie[j] & 0x7f) ==
 					BSS_MEMBERSHIP_SELECTOR_SAE_H2E_ONLY)) {
-				if (wpa_s->conf->sae_pwe == 0 &&
+				if (wpa_s->conf->sae_pwe ==
+				    SAE_PWE_HUNT_AND_PECK &&
 				    !ssid->sae_password_id &&
 				    wpa_key_mgmt_sae(ssid->key_mgmt)) {
 					if (debug_print)
@@ -1393,9 +1402,10 @@ static bool wpa_scan_res_ok(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid,
 #ifdef CONFIG_SAE
 	/* When using SAE Password Identifier and when operationg on the 6 GHz
 	 * band, only H2E is allowed. */
-	if ((wpa_s->conf->sae_pwe == 1 || is_6ghz_freq(bss->freq) ||
-	     ssid->sae_password_id) &&
-	    wpa_s->conf->sae_pwe != 3 && wpa_key_mgmt_sae(ssid->key_mgmt) &&
+	if ((wpa_s->conf->sae_pwe == SAE_PWE_HASH_TO_ELEMENT ||
+	     is_6ghz_freq(bss->freq) || ssid->sae_password_id) &&
+	    wpa_s->conf->sae_pwe != SAE_PWE_FORCE_HUNT_AND_PECK &&
+	    wpa_key_mgmt_sae(ssid->key_mgmt) &&
 #ifdef CONFIG_DRIVER_NL80211_BRCM
 	    !(wpa_key_mgmt_wpa_psk_no_sae(ssid->key_mgmt)) &&
 #endif /* CONFIG_DRIVER_NL80211_BRCM */
@@ -2804,8 +2814,10 @@ static int wpa_supplicant_use_own_rsne_params(struct wpa_supplicant *wpa_s,
 		p += len;
 	}
 
-	if (!found || wpa_parse_wpa_ie(p, len, &ie) < 0)
+	if (!found || wpa_parse_wpa_ie(p, len, &ie) < 0) {
+		wpa_sm_set_param(wpa_s->wpa, WPA_PARAM_OCV, 0);
 		return 0;
+	}
 
 	wpa_hexdump(MSG_DEBUG,
 		    "WPA: Update cipher suite selection based on IEs in driver-generated WPA/RSNE in AssocReq",
@@ -2832,6 +2844,11 @@ static int wpa_supplicant_use_own_rsne_params(struct wpa_supplicant *wpa_s,
 		return -1;
 	}
 
+	if (((wpa_s->drv_flags & WPA_DRIVER_FLAGS_SME) ||
+	     (wpa_s->drv_flags2 & WPA_DRIVER_FLAGS2_OCV)) && ssid->ocv)
+		wpa_sm_set_param(wpa_s->wpa, WPA_PARAM_OCV,
+				 !!(ie.capabilities & WPA_CAPABILITY_OCVC));
+
 	/*
 	 * Update PMK in wpa_sm and the driver if roamed to WPA/WPA2 PSK from a
 	 * different AKM.
@@ -2848,8 +2865,8 @@ static int wpa_supplicant_use_own_rsne_params(struct wpa_supplicant *wpa_s,
 		wpa_sm_set_pmk(wpa_s->wpa, ssid->psk, PMK_LEN, NULL, NULL);
 		if (wpa_s->conf->key_mgmt_offload &&
 		    (wpa_s->drv_flags & WPA_DRIVER_FLAGS_KEY_MGMT_OFFLOAD) &&
-		    wpa_drv_set_key(wpa_s, 0, NULL, 0, 0, NULL, 0, ssid->psk,
-				    PMK_LEN, KEY_FLAG_PMK))
+		    wpa_drv_set_key(wpa_s, -1, 0, NULL, 0, 0, NULL, 0,
+				    ssid->psk, PMK_LEN, KEY_FLAG_PMK))
 			wpa_dbg(wpa_s, MSG_ERROR,
 				"WPA: Cannot set PMK for key management offload");
 	}
@@ -3319,7 +3336,7 @@ no_pfs:
 		p += len;
 	}
 #endif /* CONFIG_SME */
-#ifdef CONFIG_DRIVER_NL80211_BRCM
+#if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 	if (((wpa_s->key_mgmt == WPA_KEY_MGMT_FT_PSK) ||
 		(wpa_s->key_mgmt == WPA_KEY_MGMT_FT_IEEE8021X) ||
 		(wpa_s->key_mgmt == WPA_KEY_MGMT_FT_SAE) ||
@@ -3327,7 +3344,7 @@ no_pfs:
 		wpa_ft_is_completed(wpa_s->wpa)) {
 		return 0;
 	}
-#endif /* CONFIG_DRIVER_NL80211_BRCM */
+#endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
 
 	/* Process FT when SME is in the driver */
 	if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_SME) &&
@@ -3513,13 +3530,14 @@ static int wpa_drv_get_mlo_info(struct wpa_supplicant *wpa_s)
 			}
 		}
 
-		if (match &&
+		if (match && wpa_s->mlo_assoc_link_id == mlo.assoc_link_id &&
 		    os_memcmp(wpa_s->ap_mld_addr, mlo.ap_mld_addr,
 			      ETH_ALEN) == 0)
 			return 0;
 	}
 
 	wpa_s->valid_links = mlo.valid_links;
+	wpa_s->mlo_assoc_link_id = mlo.assoc_link_id;
 	os_memcpy(wpa_s->ap_mld_addr, mlo.ap_mld_addr, ETH_ALEN);
 	for (i = 0; i < MAX_NUM_MLD_LINKS; i++) {
 		if (!(wpa_s->valid_links & BIT(i)))
@@ -3535,6 +3553,66 @@ static int wpa_drv_get_mlo_info(struct wpa_supplicant *wpa_s)
 }
 
 
+static int wpa_sm_set_ml_info(struct wpa_supplicant *wpa_s)
+{
+	struct driver_sta_mlo_info drv_mlo;
+	struct wpa_sm_mlo wpa_mlo;
+	const u8 *bss_rsn = NULL, *bss_rsnx = NULL;
+	int i;
+
+	os_memset(&drv_mlo, 0, sizeof(drv_mlo));
+	if (wpas_drv_get_sta_mlo_info(wpa_s, &drv_mlo)) {
+		wpa_dbg(wpa_s, MSG_INFO, "Failed to get MLO link info");
+		return -1;
+	}
+
+	os_memset(&wpa_mlo, 0, sizeof(wpa_mlo));
+	if (!drv_mlo.valid_links)
+		goto out;
+
+	os_memcpy(wpa_mlo.ap_mld_addr, drv_mlo.ap_mld_addr, ETH_ALEN);
+	wpa_mlo.assoc_link_id = drv_mlo.assoc_link_id;
+	wpa_mlo.valid_links = drv_mlo.valid_links;
+	wpa_mlo.req_links = drv_mlo.req_links;
+
+	for (i = 0; i < MAX_NUM_MLD_LINKS; i++) {
+		struct wpa_bss *bss;
+
+		if (!(drv_mlo.req_links & BIT(i)))
+			continue;
+
+		bss = wpa_supplicant_get_new_bss(wpa_s, drv_mlo.links[i].bssid);
+		if (!bss) {
+			wpa_supplicant_update_scan_results(wpa_s);
+			bss = wpa_supplicant_get_new_bss(
+				wpa_s, drv_mlo.links[i].bssid);
+		}
+
+		if (!bss) {
+			wpa_dbg(wpa_s, MSG_INFO,
+				"Failed to get MLO link %d BSS", i);
+			return -1;
+		}
+
+		bss_rsn = wpa_bss_get_ie(bss, WLAN_EID_RSN);
+		bss_rsnx = wpa_bss_get_ie(bss, WLAN_EID_RSNX);
+
+		wpa_mlo.links[i].ap_rsne = bss_rsn ? (u8 *) bss_rsn : NULL;
+		wpa_mlo.links[i].ap_rsne_len = bss_rsn ? 2 + bss_rsn[1] : 0;
+		wpa_mlo.links[i].ap_rsnxe = bss_rsnx ? (u8 *) bss_rsnx : NULL;
+		wpa_mlo.links[i].ap_rsnxe_len = bss_rsnx ? 2 + bss_rsnx[1] : 0;
+
+		os_memcpy(wpa_mlo.links[i].bssid, drv_mlo.links[i].bssid,
+			  ETH_ALEN);
+		os_memcpy(wpa_mlo.links[i].addr, drv_mlo.links[i].addr,
+			  ETH_ALEN);
+	}
+
+out:
+	return wpa_sm_set_mlo_params(wpa_s->wpa, &wpa_mlo);
+}
+
+
 static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 				       union wpa_event_data *data)
 {
@@ -3544,9 +3622,9 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 #if defined(CONFIG_FILS) || defined(CONFIG_MBO)
 	struct wpa_bss *bss;
 #endif /* CONFIG_FILS || CONFIG_MBO */
-#ifdef CONFIG_DRIVER_NL80211_BRCM
+#if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 	struct wpa_ie_data ie;
-#endif /* CONFIG_DRIVER_NL80211_BRCM */
+#endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
 
 #ifdef CONFIG_AP
 	if (wpa_s->ap_iface) {
@@ -3564,7 +3642,7 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 	eloop_cancel_timeout(wpas_network_reenabled, wpa_s, NULL);
 	wpa_s->own_reconnect_req = 0;
 
-#ifdef CONFIG_DRIVER_NL80211_BRCM
+#if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 	if (!(wpa_sm_parse_own_wpa_ie(wpa_s->wpa, &ie) < 0)) {
 		struct wpa_ft_ies parse;
 		/* Check for FT reassociation is done by the driver */
@@ -3583,7 +3661,7 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		}
 #endif  /* CONFIG_IEEE80211R */
 	}
-#endif /* CONFIG_DRIVER_NL80211_BRCM */
+#endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
 
 	ft_completed = wpa_ft_is_completed(wpa_s->wpa);
 
@@ -3623,7 +3701,7 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 	if (!ft_completed)
 		ft_completed = wpa_fils_is_completed(wpa_s->wpa);
 
-#ifdef CONFIG_DRIVER_NL80211_BRCM
+#if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 	/* For driver based roaming, insert PSK during the initial association */
 	if (is_zero_ether_addr(wpa_s->bssid) &&
 		wpa_key_mgmt_wpa_psk(wpa_s->key_mgmt)) {
@@ -3631,7 +3709,8 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		wpa_dbg(wpa_s, MSG_DEBUG, "Pass the PMK to the driver");
 		wpa_sm_install_pmk(wpa_s->wpa);
 	}
-#endif /* CONFIG_DRIVER_NL80211_BRCM */
+#endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
+
 	wpa_supplicant_set_state(wpa_s, WPA_ASSOCIATED);
 	if (os_memcmp(bssid, wpa_s->bssid, ETH_ALEN) != 0) {
 		if (os_reltime_initialized(&wpa_s->session_start)) {
@@ -3655,7 +3734,7 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		if (wpa_supplicant_dynamic_keys(wpa_s) && !ft_completed) {
 			wpa_clear_keys(wpa_s, bssid);
 		}
-		if (wpa_supplicant_select_config(wpa_s) < 0) {
+		if (wpa_supplicant_select_config(wpa_s, data) < 0) {
 			wpa_supplicant_deauthenticate(
 				wpa_s, WLAN_REASON_DEAUTH_LEAVING);
 			return;
@@ -3692,6 +3771,15 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		wpa_supplicant_scard_init(wpa_s, wpa_s->current_ssid);
 	}
 	wpa_sm_notify_assoc(wpa_s->wpa, bssid);
+
+	if (wpa_sm_set_ml_info(wpa_s)) {
+		wpa_dbg(wpa_s, MSG_INFO,
+			"Failed to set MLO connection info to wpa_sm");
+		wpa_supplicant_deauthenticate(wpa_s,
+					      WLAN_REASON_DEAUTH_LEAVING);
+		return;
+	}
+
 	if (wpa_s->l2)
 		l2_packet_notify_auth_start(wpa_s->l2);
 
@@ -3768,7 +3856,7 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		 */
 		eapol_sm_notify_portValid(wpa_s->eapol, true);
 	}
-#ifdef CONFIG_DRIVER_NL80211_BRCM
+#if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 	if (ft_completed && wpa_key_mgmt_ft(wpa_s->key_mgmt)) {
 		if (wpa_drv_get_bssid(wpa_s, bssid) < 0) {
 			wpa_dbg(wpa_s, MSG_ERROR, "Failed to get BSSID, key_mgmt: 0x%0x",
@@ -3781,7 +3869,8 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		wpa_s->assoc_freq = data->assoc_info.freq;
 		wpa_sm_notify_brcm_ft_reassoc(wpa_s->wpa, bssid);
 	}
-#endif /* CONFIG_DRIVER_NL80211_BRCM */
+#endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
+
 	wpa_s->last_eapol_matches_bssid = 0;
 
 #ifdef CONFIG_TESTING_OPTIONS
@@ -3806,8 +3895,9 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 		os_get_reltime(&now);
 		os_reltime_sub(&now, &wpa_s->pending_eapol_rx_time, &age);
 		if (age.sec == 0 && age.usec < 200000 &&
-		    os_memcmp(wpa_s->pending_eapol_rx_src, bssid, ETH_ALEN) ==
-		    0) {
+		    os_memcmp(wpa_s->pending_eapol_rx_src,
+			      wpa_s->valid_links ? wpa_s->ap_mld_addr : bssid,
+			      ETH_ALEN) == 0) {
 			wpa_dbg(wpa_s, MSG_DEBUG, "Process pending EAPOL "
 				"frame that was received just before "
 				"association notification");

@@ -250,7 +250,7 @@ static int wpa_eapol_set_wep_key(void *ctx, int unicast, int keyidx,
 		else
 			wpa_s->group_cipher = cipher;
 	}
-	return wpa_drv_set_key(wpa_s, WPA_ALG_WEP,
+	return wpa_drv_set_key(wpa_s, -1, WPA_ALG_WEP,
 			       unicast ? wpa_s->bssid : NULL,
 			       keyidx, unicast, NULL, 0, key, keylen,
 			       unicast ? KEY_FLAG_PAIRWISE_RX_TX :
@@ -316,19 +316,19 @@ static void wpa_supplicant_eapol_cb(struct eapol_sm *eapol,
 		ieee802_1x_notify_create_actor(wpa_s, wpa_s->last_eapol_src);
 	}
 
-#ifdef CONFIG_DRIVER_NL80211_BRCM                                                            
+#if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 	if (result != EAPOL_SUPP_RESULT_SUCCESS)                          
 #else                                                                     
 	if (result != EAPOL_SUPP_RESULT_SUCCESS ||                        
 		!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE_8021X))  
-#endif /* CONFIG_DRIVER_NL80211_BRCM */                                                      
+#endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
 		return;                                                   
 
-#ifdef CONFIG_DRIVER_NL80211_BRCM
+#if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 	if (wpa_ft_is_ft_protocol(wpa_s->wpa)) {
 		return;
 	}
-#endif /* CONFIG_DRIVER_NL80211_BRCM */
+#endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
 
 	if (!wpa_key_mgmt_wpa_ieee8021x(wpa_s->key_mgmt))
 		return;
@@ -375,7 +375,7 @@ static void wpa_supplicant_eapol_cb(struct eapol_sm *eapol,
 	wpa_hexdump_key(MSG_DEBUG, "RSN: Configure PMK for driver-based 4-way "
 			"handshake", pmk, pmk_len);
 
-	if (wpa_drv_set_key(wpa_s, 0, NULL, 0, 0, NULL, 0, pmk,
+	if (wpa_drv_set_key(wpa_s, -1, 0, NULL, 0, 0, NULL, 0, pmk,
 			    pmk_len, KEY_FLAG_PMK)) {
 		wpa_printf(MSG_DEBUG, "Failed to set PMK to the driver");
 	}
@@ -537,7 +537,7 @@ static int wpa_supplicant_get_bssid(void *ctx, u8 *bssid)
 }
 
 
-static int wpa_supplicant_set_key(void *_wpa_s, enum wpa_alg alg,
+static int wpa_supplicant_set_key(void *_wpa_s, int link_id, enum wpa_alg alg,
 				  const u8 *addr, int key_idx, int set_tx,
 				  const u8 *seq, size_t seq_len,
 				  const u8 *key, size_t key_len,
@@ -566,8 +566,8 @@ static int wpa_supplicant_set_key(void *_wpa_s, enum wpa_alg alg,
 		wpa_s->last_tk_len = key_len;
 	}
 #endif /* CONFIG_TESTING_OPTIONS */
-	return wpa_drv_set_key(wpa_s, alg, addr, key_idx, set_tx, seq, seq_len,
-			       key, key_len, key_flag);
+	return wpa_drv_set_key(wpa_s, link_id, alg, addr, key_idx, set_tx, seq,
+			       seq_len, key, key_len, key_flag);
 }
 
 
@@ -1269,7 +1269,7 @@ static int wpa_supplicant_key_mgmt_set_pmk(void *ctx, const u8 *pmk,
 
 	if (wpa_s->conf->key_mgmt_offload &&
 	    (wpa_s->drv_flags & WPA_DRIVER_FLAGS_KEY_MGMT_OFFLOAD))
-		return wpa_drv_set_key(wpa_s, 0, NULL, 0, 0,
+		return wpa_drv_set_key(wpa_s, -1, 0, NULL, 0, 0,
 				       NULL, 0, pmk, pmk_len, KEY_FLAG_PMK);
 	else
 		return 0;
@@ -1408,7 +1408,7 @@ static void wpa_supplicant_store_ptk(void *ctx, u8 *addr, int cipher,
 	struct wpa_supplicant *wpa_s = ctx;
 
 	ptksa_cache_add(wpa_s->ptksa, wpa_s->own_addr, addr, cipher, life_time,
-			ptk, NULL, NULL);
+			ptk, NULL, NULL, 0);
 }
 
 #endif /* CONFIG_NO_WPA */
@@ -1427,6 +1427,16 @@ static int wpa_supplicant_set_ltf_keyseed(void *_wpa_s, const u8 *own_addr,
 					      ltf_keyseed, 0);
 }
 #endif /* CONFIG_PASN */
+
+
+static void
+wpa_supplicant_notify_pmksa_cache_entry(void *_wpa_s,
+					struct rsn_pmksa_cache_entry *entry)
+{
+	struct wpa_supplicant *wpa_s = _wpa_s;
+
+	wpas_notify_pmk_cache_added(wpa_s, entry);
+}
 
 
 int wpa_supplicant_init_wpa(struct wpa_supplicant *wpa_s)
@@ -1494,6 +1504,7 @@ int wpa_supplicant_init_wpa(struct wpa_supplicant *wpa_s)
 #ifdef CONFIG_PASN
 	ctx->set_ltf_keyseed = wpa_supplicant_set_ltf_keyseed;
 #endif /* CONFIG_PASN */
+	ctx->notify_pmksa_cache_entry = wpa_supplicant_notify_pmksa_cache_entry;
 
 	wpa_s->wpa = wpa_sm_init(ctx);
 	if (wpa_s->wpa == NULL) {

@@ -5000,6 +5000,250 @@ static int print_fils_indication(struct wpa_bss *bss, char *pos, char *end)
 #endif /* CONFIG_FILS */
 
 
+static int print_rnr(struct wpa_bss *bss, char *pos, char *end)
+{
+	char *start = pos;
+	const u8 *ie, *ie_end;
+	unsigned int n = 0;
+	int ret;
+
+	ie = wpa_bss_get_ie(bss, WLAN_EID_REDUCED_NEIGHBOR_REPORT);
+	if (!ie)
+		return 0;
+
+	ie_end = ie + 2 + ie[1];
+	ie += 2;
+
+	while (ie < ie_end) {
+		const struct ieee80211_neighbor_ap_info *info =
+			(const struct ieee80211_neighbor_ap_info *) ie;
+		const u8 *tbtt_start;
+		size_t left = ie_end - ie;
+
+		if (left < sizeof(struct ieee80211_neighbor_ap_info))
+			return 0;
+
+		left -= sizeof(struct ieee80211_neighbor_ap_info);
+		if (left < info->tbtt_info_len)
+			return 0;
+
+		ret = os_snprintf(pos, end - pos,
+				  "ap_info[%u]: tbtt_info: hdr=0x%x, len=%u, op_c=%u, channel=%u, ",
+				  n, *ie, info->tbtt_info_len,
+				  info->op_class, info->channel);
+		if (os_snprintf_error(end - pos, ret))
+			return 0;
+		pos += ret;
+
+		ie += sizeof(struct ieee80211_neighbor_ap_info);
+		tbtt_start = ie;
+		if (info->tbtt_info_len >= 1) {
+			ret = os_snprintf(pos, end - pos,
+					  "tbtt_offset=%u, ", *ie);
+			if (os_snprintf_error(end - pos, ret))
+				return 0;
+
+			ie++;
+			pos += ret;
+		}
+
+		if (info->tbtt_info_len >= 7) {
+			ret = os_snprintf(pos, end - pos,
+					  "bssid=" MACSTR ", ",
+					  MAC2STR(ie));
+			if (os_snprintf_error(end - pos, ret))
+				return 0;
+
+			ie += ETH_ALEN;
+			pos += ret;
+		}
+
+		if (info->tbtt_info_len >= 11) {
+			ret = os_snprintf(pos, end - pos,
+					  "short SSID=0x%x, ",
+					  WPA_GET_LE32(ie));
+			if (os_snprintf_error(end - pos, ret))
+				return 0;
+
+			ie += 4;
+			pos += ret;
+		}
+
+		if (info->tbtt_info_len >= 12) {
+			ret = os_snprintf(pos, end - pos,
+					  "bss_params=0x%x, ", *ie);
+			if (os_snprintf_error(end - pos, ret))
+				return 0;
+
+			ie++;
+			pos += ret;
+		}
+
+		if (info->tbtt_info_len >= 13) {
+			ret = os_snprintf(pos, end - pos,
+					  "PSD=0x%x, ", *ie);
+			if (os_snprintf_error(end - pos, ret))
+				return 0;
+
+			ie++;
+			pos += ret;
+		}
+
+		if (info->tbtt_info_len >= 16) {
+			ret = os_snprintf(pos, end - pos,
+					  "mld ID=%u, link ID=%u",
+					  *ie, *(ie + 1) & 0xF);
+			if (os_snprintf_error(end - pos, ret))
+				return 0;
+
+			ie += 3;
+			pos += ret;
+		}
+
+		ie = tbtt_start + info->tbtt_info_len;
+
+		ret = os_snprintf(pos, end - pos, "\n");
+		if (os_snprintf_error(end - pos, ret))
+			return 0;
+		pos += ret;
+
+		n++;
+	}
+
+	return pos - start;
+}
+
+
+static int print_ml(struct wpa_bss *bss, char *pos, char *end)
+{
+	const struct ieee80211_eht_ml *ml;
+	char *start = pos;
+	const u8 *ie, *ie_end;
+	u16 ml_control;
+	u8 common_info_length;
+	int ret;
+
+	ie = get_ml_ie(wpa_bss_ie_ptr(bss), bss->ie_len,
+		       MULTI_LINK_CONTROL_TYPE_BASIC);
+	if (!ie)
+		return 0;
+
+	ie_end = ie + 2 + ie[1];
+	ie += 3;
+	ml = (const struct ieee80211_eht_ml *) ie;
+
+	/* control + common info length + MLD MAC Address */
+	if (ie_end - ie < 2 + 1 + ETH_ALEN)
+		return 0;
+
+	ml_control = le_to_host16(ml->ml_control);
+
+	common_info_length = *(ie + 2);
+	ret = os_snprintf(pos, end - pos,
+			  "multi-link: control=0x%x, common info len=%u",
+			  ml_control, common_info_length);
+	if (os_snprintf_error(end - pos, ret))
+		return 0;
+	pos += ret;
+
+	ie += 2;
+	if (ie_end - ie < common_info_length)
+		return 0;
+
+	ie++;
+	common_info_length--;
+
+	if (common_info_length < ETH_ALEN)
+		return 0;
+
+	ret = os_snprintf(pos, end - pos, ", MLD addr=" MACSTR, MAC2STR(ie));
+	if (os_snprintf_error(end - pos, ret))
+		return 0;
+	pos += ret;
+
+	ie += ETH_ALEN;
+	common_info_length -= ETH_ALEN;
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_LINK_ID) {
+		if (common_info_length < 1)
+			return 0;
+
+		ret = os_snprintf(pos, end - pos, ", link ID=%u", *ie & 0x0f);
+		if (os_snprintf_error(end - pos, ret))
+			return 0;
+		pos += ret;
+		ie++;
+		common_info_length--;
+	}
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_BSS_PARAM_CH_COUNT) {
+		if (common_info_length < 1)
+			return 0;
+
+		ret = os_snprintf(pos, end - pos,
+				  ", BSS change parameters=0x%x", *ie);
+		if (os_snprintf_error(end - pos, ret))
+			return 0;
+		pos += ret;
+		ie++;
+		common_info_length--;
+	}
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_MSD_INFO) {
+		if (common_info_length < 2)
+			return 0;
+
+		ret = os_snprintf(pos, end - pos, ", MSD Info=0x%x",
+				  WPA_GET_LE16(ie));
+		if (os_snprintf_error(end - pos, ret))
+			return 0;
+		pos += ret;
+		ie += 2;
+		common_info_length -= 2;
+	}
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_EML_CAPA) {
+		if (common_info_length < 2)
+			return 0;
+
+		ret = os_snprintf(pos, end - pos, ", EML capabilities=0x%x",
+				  WPA_GET_LE16(ie));
+		if (os_snprintf_error(end - pos, ret))
+			return 0;
+		pos += ret;
+		ie += 2;
+		common_info_length -= 2;
+	}
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_MLD_CAPA) {
+		if (common_info_length < 2)
+			return 0;
+
+		ret = os_snprintf(pos, end - pos, ", MLD capabilities=0x%x",
+				  WPA_GET_LE16(ie));
+		if (os_snprintf_error(end - pos, ret))
+			return 0;
+		pos += ret;
+		ie += 2;
+		common_info_length -= 2;
+	}
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_AP_MLD_ID) {
+		if (common_info_length < 1)
+			return 0;
+
+		ret = os_snprintf(pos, end - pos, ", MLD ID=0x%x\n", *ie);
+		if (os_snprintf_error(end - pos, ret))
+			return 0;
+		pos += ret;
+		ie += 1;
+		common_info_length--;
+	}
+
+	return pos - start;
+}
+
+
 static int print_bss_info(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 			  unsigned long mask, char *buf, size_t buflen)
 {
@@ -5450,6 +5694,12 @@ static int print_bss_info(struct wpa_supplicant *wpa_s, struct wpa_bss *bss,
 		pos += ret;
 	}
 
+	if (mask & WPA_BSS_MASK_RNR)
+		pos += print_rnr(bss, pos, end);
+
+	if (mask & WPA_BSS_MASK_ML)
+		pos += print_ml(bss, pos, end);
+
 	if (mask & WPA_BSS_MASK_DELIM) {
 		ret = os_snprintf(pos, end - pos, "====\n");
 		if (os_snprintf_error(end - pos, ret))
@@ -5655,23 +5905,23 @@ static void wpa_supplicant_ctrl_iface_drop_sa(struct wpa_supplicant *wpa_s)
 {
 	wpa_printf(MSG_DEBUG, "Dropping SA without deauthentication");
 	/* MLME-DELETEKEYS.request */
-	wpa_drv_set_key(wpa_s, WPA_ALG_NONE, NULL, 0, 0, NULL, 0, NULL,
+	wpa_drv_set_key(wpa_s, -1, WPA_ALG_NONE, NULL, 0, 0, NULL, 0, NULL,
 			0, KEY_FLAG_GROUP);
-	wpa_drv_set_key(wpa_s, WPA_ALG_NONE, NULL, 1, 0, NULL, 0, NULL,
+	wpa_drv_set_key(wpa_s, -1, WPA_ALG_NONE, NULL, 1, 0, NULL, 0, NULL,
 			0, KEY_FLAG_GROUP);
-	wpa_drv_set_key(wpa_s, WPA_ALG_NONE, NULL, 2, 0, NULL, 0, NULL,
+	wpa_drv_set_key(wpa_s, -1, WPA_ALG_NONE, NULL, 2, 0, NULL, 0, NULL,
 			0, KEY_FLAG_GROUP);
-	wpa_drv_set_key(wpa_s, WPA_ALG_NONE, NULL, 3, 0, NULL, 0, NULL,
+	wpa_drv_set_key(wpa_s, -1, WPA_ALG_NONE, NULL, 3, 0, NULL, 0, NULL,
 			0, KEY_FLAG_GROUP);
-	wpa_drv_set_key(wpa_s, WPA_ALG_NONE, NULL, 4, 0, NULL, 0, NULL,
+	wpa_drv_set_key(wpa_s, -1, WPA_ALG_NONE, NULL, 4, 0, NULL, 0, NULL,
 			0, KEY_FLAG_GROUP);
-	wpa_drv_set_key(wpa_s, WPA_ALG_NONE, NULL, 5, 0, NULL, 0, NULL,
+	wpa_drv_set_key(wpa_s, -1, WPA_ALG_NONE, NULL, 5, 0, NULL, 0, NULL,
 			0, KEY_FLAG_GROUP);
 
-	wpa_drv_set_key(wpa_s, WPA_ALG_NONE, wpa_s->bssid, 0, 0, NULL, 0, NULL,
-			0, KEY_FLAG_PAIRWISE);
+	wpa_drv_set_key(wpa_s, -1, WPA_ALG_NONE, wpa_s->bssid, 0, 0, NULL, 0,
+			NULL, 0, KEY_FLAG_PAIRWISE);
 	if (wpa_sm_ext_key_id(wpa_s->wpa))
-		wpa_drv_set_key(wpa_s, WPA_ALG_NONE, wpa_s->bssid, 1, 0,
+		wpa_drv_set_key(wpa_s, -1, WPA_ALG_NONE, wpa_s->bssid, 1, 0,
 				NULL, 0, NULL, 0, KEY_FLAG_PAIRWISE);
 	/* MLME-SETPROTECTION.request(None) */
 	wpa_drv_mlme_setprotection(wpa_s, wpa_s->bssid,
@@ -9974,14 +10224,15 @@ static int wpas_ctrl_reset_pn(struct wpa_supplicant *wpa_s)
 
 	/* First, use a zero key to avoid any possible duplicate key avoidance
 	 * in the driver. */
-	if (wpa_drv_set_key(wpa_s, wpa_s->last_tk_alg, wpa_s->last_tk_addr,
+	if (wpa_drv_set_key(wpa_s, -1, wpa_s->last_tk_alg, wpa_s->last_tk_addr,
 			    wpa_s->last_tk_key_idx, 1, zero, 6,
 			    zero, wpa_s->last_tk_len,
 			    KEY_FLAG_PAIRWISE_RX_TX) < 0)
 		return -1;
 
 	/* Set the previously configured key to reset its TSC/RSC */
-	return wpa_drv_set_key(wpa_s, wpa_s->last_tk_alg, wpa_s->last_tk_addr,
+	return wpa_drv_set_key(wpa_s, -1, wpa_s->last_tk_alg,
+			       wpa_s->last_tk_addr,
 			       wpa_s->last_tk_key_idx, 1, zero, 6,
 			       wpa_s->last_tk, wpa_s->last_tk_len,
 			       KEY_FLAG_PAIRWISE_RX_TX);
