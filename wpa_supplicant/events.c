@@ -355,9 +355,14 @@ static void wpa_find_assoc_pmkid(struct wpa_supplicant *wpa_s)
 	struct wpa_ie_data ie;
 	int pmksa_set = -1;
 	size_t i;
+	struct rsn_pmksa_cache_entry *cur_pmksa;
 
-	/* Start with assumption of no PMKSA cache entry match */
-	pmksa_cache_clear_current(wpa_s->wpa);
+	/* Start with assumption of no PMKSA cache entry match for cases other
+	 * than SAE. In particular, this is needed to generate the PMKSA cache
+	 * entries for Suite B cases with driver-based roaming indication. */
+	cur_pmksa = pmksa_cache_get_current(wpa_s->wpa);
+	if (cur_pmksa && !wpa_key_mgmt_sae(cur_pmksa->akmp))
+		pmksa_cache_clear_current(wpa_s->wpa);
 
 	if (wpa_sm_parse_own_wpa_ie(wpa_s->wpa, &ie) < 0 ||
 	    ie.pmkid == NULL)
@@ -1769,7 +1774,7 @@ wpas_get_est_throughput_from_bss_snr(const struct wpa_supplicant *wpa_s,
 	const u8 *ies = (const void *) (bss + 1);
 	size_t ie_len = bss->ie_len ? bss->ie_len : bss->beacon_ie_len;
 
-	return wpas_get_est_tpt(wpa_s, ies, ie_len, rate, snr);
+	return wpas_get_est_tpt(wpa_s, ies, ie_len, rate, snr, bss->freq);
 }
 
 #endif /* CONFIG_NO_ROAMING */
@@ -2574,11 +2579,11 @@ static int wpa_supplicant_event_associnfo(struct wpa_supplicant *wpa_s,
 {
 	int l, len, found = 0, found_x = 0, wpa_found, rsn_found;
 	const u8 *p;
-#if defined(CONFIG_IEEE80211R) || defined(CONFIG_OWE)
 	u8 bssid[ETH_ALEN];
-#endif /* CONFIG_IEEE80211R || CONFIG_OWE */
+	bool bssid_known;
 
 	wpa_dbg(wpa_s, MSG_DEBUG, "Association info event");
+	bssid_known = wpa_drv_get_bssid(wpa_s, bssid) == 0;
 	if (data->assoc_info.req_ies)
 		wpa_hexdump(MSG_DEBUG, "req_ies", data->assoc_info.req_ies,
 			    data->assoc_info.req_ies_len);
@@ -2755,7 +2760,7 @@ static int wpa_supplicant_event_associnfo(struct wpa_supplicant *wpa_s,
 
 #ifdef CONFIG_OWE
 	if (wpa_s->key_mgmt == WPA_KEY_MGMT_OWE &&
-	    (wpa_drv_get_bssid(wpa_s, bssid) < 0 ||
+	    (!bssid_known ||
 	     owe_process_assoc_resp(wpa_s->wpa, bssid,
 				    data->assoc_info.resp_ies,
 				    data->assoc_info.resp_ies_len) < 0)) {
@@ -2790,7 +2795,7 @@ no_pfs:
 #ifdef CONFIG_IEEE80211R
 #ifdef CONFIG_SME
 	if (wpa_s->sme.auth_alg == WPA_AUTH_ALG_FT) {
-		if (wpa_drv_get_bssid(wpa_s, bssid) < 0 ||
+		if (!bssid_known ||
 		    wpa_ft_validate_reassoc_resp(wpa_s->wpa,
 						 data->assoc_info.resp_ies,
 						 data->assoc_info.resp_ies_len,
@@ -2850,7 +2855,7 @@ no_pfs:
 	/* Process FT when SME is in the driver */
 	if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_SME) &&
 	    wpa_ft_is_completed(wpa_s->wpa)) {
-		if (wpa_drv_get_bssid(wpa_s, bssid) < 0 ||
+		if (!bssid_known ||
 		    wpa_ft_validate_reassoc_resp(wpa_s->wpa,
 						 data->assoc_info.resp_ies,
 						 data->assoc_info.resp_ies_len,
@@ -2867,6 +2872,11 @@ no_pfs:
 	wpa_sm_set_ft_params(wpa_s->wpa, data->assoc_info.resp_ies,
 			     data->assoc_info.resp_ies_len);
 #endif /* CONFIG_IEEE80211R */
+
+	if (bssid_known)
+		wpas_handle_assoc_resp_mscs(wpa_s, bssid,
+					    data->assoc_info.resp_ies,
+					    data->assoc_info.resp_ies_len);
 
 	/* WPA/RSN IE from Beacon/ProbeResp */
 	p = data->assoc_info.beacon_ies;
@@ -4201,6 +4211,13 @@ static void wpas_event_rx_mgmt_action(struct wpa_supplicant *wpa_s,
 	}
 #endif /* CONFIG_DPP */
 
+	if (category == WLAN_ACTION_ROBUST_AV_STREAMING &&
+	    payload[0] == ROBUST_AV_MSCS_RESP) {
+		wpas_handle_robust_av_recv_action(wpa_s, mgmt->sa,
+						  payload + 1, plen - 1);
+		return;
+	}
+
 	wpas_p2p_rx_action(wpa_s, mgmt->da, mgmt->sa, mgmt->bssid,
 			   category, payload, plen, freq);
 	if (wpa_s->ifmsh)
@@ -4562,6 +4579,7 @@ static void wpas_event_assoc_reject(struct wpa_supplicant *wpa_s,
 #ifdef CONFIG_FILS
 	/* Update ERP next sequence number */
 	if (wpa_s->auth_alg == WPA_AUTH_ALG_FILS) {
+		fils_pmksa_cache_flush(wpa_s);
 		eapol_sm_update_erp_next_seq_num(
 			wpa_s->eapol,
 			data->assoc_reject.fils_erp_next_seq_num);
@@ -4667,6 +4685,11 @@ void wpa_supplicant_event(void *ctx, enum wpa_event_type event,
 			break;
 		}
 #endif /* CONFIG_TESTING_OPTIONS */
+		if (wpa_s->disconnected) {
+			wpa_printf(MSG_INFO,
+				   "Ignore unexpected EVENT_ASSOC in disconnected state");
+			break;
+		}
 		wpa_supplicant_event_assoc(wpa_s, data);
 		wpa_s->assoc_status_code = WLAN_STATUS_SUCCESS;
 		if (data &&
@@ -5153,13 +5176,21 @@ void wpa_supplicant_event(void *ctx, enum wpa_event_type event,
 		break;
 	case EVENT_INTERFACE_MAC_CHANGED:
 		wpa_supplicant_update_mac_addr(wpa_s);
+		wpa_sm_pmksa_cache_flush(wpa_s->wpa, NULL);
 		break;
 	case EVENT_INTERFACE_ENABLED:
 		wpa_dbg(wpa_s, MSG_DEBUG, "Interface was enabled");
 		if (wpa_s->wpa_state == WPA_INTERFACE_DISABLED) {
+			u8 addr[ETH_ALEN];
+
 			eloop_cancel_timeout(wpas_clear_disabled_interface,
 					     wpa_s, NULL);
+			os_memcpy(addr, wpa_s->own_addr, ETH_ALEN);
 			wpa_supplicant_update_mac_addr(wpa_s);
+			if (os_memcmp(addr, wpa_s->own_addr, ETH_ALEN) != 0)
+				wpa_sm_pmksa_cache_flush(wpa_s->wpa, NULL);
+			else
+				wpa_sm_pmksa_cache_reconfig(wpa_s->wpa);
 			wpa_supplicant_set_default_scan_ies(wpa_s);
 			if (wpa_s->p2p_mgmt) {
 				wpa_supplicant_set_state(wpa_s,

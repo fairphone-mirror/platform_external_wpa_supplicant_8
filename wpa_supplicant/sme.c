@@ -136,6 +136,12 @@ static struct wpabuf * sme_auth_build_sae_commit(struct wpa_supplicant *wpa_s,
 
 	if (use_pt || wpa_s->conf->sae_pwe == 1 || wpa_s->conf->sae_pwe == 2) {
 		bss = wpa_bss_get_bssid_latest(wpa_s, bssid);
+		if(!bss) {
+			wpa_printf(MSG_DEBUG,
+				   "SAE: BSS not available, update scan result to get BSS");
+			wpa_supplicant_update_scan_results(wpa_s);
+			bss = wpa_bss_get_bssid_latest(wpa_s, bssid);
+		}
 		if (bss) {
 			const u8 *rsnxe;
 
@@ -1288,7 +1294,7 @@ static int sme_sae_auth(struct wpa_supplicant *wpa_s, u16 auth_transaction,
 
 	if (status_code != WLAN_STATUS_SUCCESS &&
 	    status_code != WLAN_STATUS_SAE_HASH_TO_ELEMENT)
-		return -1;
+		return -2;
 
 	if (auth_transaction == 1) {
 		u16 res;
@@ -1432,7 +1438,10 @@ void sme_external_auth_mgmt_rx(struct wpa_supplicant *wpa_s,
 		if (res < 0) {
 			/* Notify failure to the driver */
 			sme_send_external_auth_status(
-				wpa_s, WLAN_STATUS_UNSPECIFIED_FAILURE);
+				wpa_s,
+				res == -2 ?
+				le_to_host16(header->u.auth.status_code) :
+				WLAN_STATUS_UNSPECIFIED_FAILURE);
 			return;
 		}
 		if (res != 1)
@@ -1842,6 +1851,42 @@ pfs_fail:
 		}
 		wpa_s->sme.assoc_req_ie_len += multi_ap_ie_len;
 	}
+
+	wpa_s->mscs_setup_done = false;
+	if (wpa_s->current_bss && wpa_s->robust_av.valid_config) {
+		struct wpabuf *mscs_ie;
+		size_t mscs_ie_len, buf_len, *wpa_ie_len, max_ie_len;
+
+		if (!wpa_bss_ext_capab(wpa_s->current_bss, WLAN_EXT_CAPAB_MSCS))
+			goto mscs_fail;
+
+		buf_len = 3 +	/* MSCS descriptor IE header */
+			  1 +	/* Request type */
+			  2 +	/* User priority control */
+			  4 +	/* Stream timeout */
+			  3 +	/* TCLAS Mask IE header */
+			  wpa_s->robust_av.frame_classifier_len;
+		mscs_ie = wpabuf_alloc(buf_len);
+		if (!mscs_ie) {
+			wpa_printf(MSG_INFO,
+				   "MSCS: Failed to allocate MSCS IE");
+			goto mscs_fail;
+		}
+
+		wpa_ie_len = &wpa_s->sme.assoc_req_ie_len;
+		max_ie_len = sizeof(wpa_s->sme.assoc_req_ie);
+		wpas_populate_mscs_descriptor_ie(&wpa_s->robust_av, mscs_ie);
+		if ((*wpa_ie_len + wpabuf_len(mscs_ie)) <= max_ie_len) {
+			wpa_hexdump_buf(MSG_MSGDUMP, "MSCS IE", mscs_ie);
+			mscs_ie_len = wpabuf_len(mscs_ie);
+			os_memcpy(wpa_s->sme.assoc_req_ie + *wpa_ie_len,
+				  wpabuf_head(mscs_ie), mscs_ie_len);
+			*wpa_ie_len += mscs_ie_len;
+		}
+
+		wpabuf_free(mscs_ie);
+	}
+mscs_fail:
 
 	params.bssid = bssid;
 	params.ssid = wpa_s->sme.ssid;

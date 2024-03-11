@@ -73,6 +73,7 @@ static void wpas_conf_ap_vht(struct wpa_supplicant *wpa_s,
 #ifdef CONFIG_P2P
 	u8 center_chan = 0;
 	u8 channel = conf->channel;
+	u8 freq_seg_idx;
 #endif /* CONFIG_P2P */
 
 	if (!conf->secondary_channel)
@@ -80,19 +81,21 @@ static void wpas_conf_ap_vht(struct wpa_supplicant *wpa_s,
 
 	/* Use the maximum oper channel width if it's given. */
 	if (ssid->max_oper_chwidth)
-		conf->vht_oper_chwidth = ssid->max_oper_chwidth;
+		hostapd_set_oper_chwidth(conf, ssid->max_oper_chwidth);
 
 	ieee80211_freq_to_chan(ssid->vht_center_freq2,
-			       &conf->vht_oper_centr_freq_seg1_idx);
+			       &freq_seg_idx);
+	hostapd_set_oper_centr_freq_seg1_idx(conf, freq_seg_idx);
 
 	if (!ssid->p2p_group) {
 		if (!ssid->vht_center_freq1 ||
-		    conf->vht_oper_chwidth == CHANWIDTH_USE_HT)
+		    hostapd_get_oper_chwidth(conf) == CHANWIDTH_USE_HT)
 			goto no_vht;
 		ieee80211_freq_to_chan(ssid->vht_center_freq1,
-				       &conf->vht_oper_centr_freq_seg0_idx);
+				       &freq_seg_idx);
+		hostapd_set_oper_centr_freq_seg0_idx(conf, freq_seg_idx);
 		wpa_printf(MSG_DEBUG, "VHT seg0 index %d for AP",
-			   conf->vht_oper_centr_freq_seg0_idx);
+			   hostapd_get_oper_centr_freq_seg0_idx(conf));
 		return;
 	}
 
@@ -100,13 +103,15 @@ static void wpas_conf_ap_vht(struct wpa_supplicant *wpa_s,
 	switch (conf->vht_oper_chwidth) {
 	case CHANWIDTH_80MHZ:
 	case CHANWIDTH_80P80MHZ:
-		center_chan = wpas_p2p_get_vht80_center(wpa_s, mode, channel);
+		center_chan = wpas_p2p_get_vht80_center(wpa_s, mode, channel,
+							conf->op_class);
 		wpa_printf(MSG_DEBUG,
 			   "VHT center channel %u for 80 or 80+80 MHz bandwidth",
 			   center_chan);
 		break;
 	case CHANWIDTH_160MHZ:
-		center_chan = wpas_p2p_get_vht160_center(wpa_s, mode, channel);
+		center_chan = wpas_p2p_get_vht160_center(wpa_s, mode, channel,
+							 conf->op_class);
 		wpa_printf(MSG_DEBUG,
 			   "VHT center channel %u for 160 MHz bandwidth",
 			   center_chan);
@@ -117,16 +122,26 @@ static void wpas_conf_ap_vht(struct wpa_supplicant *wpa_s,
 		 * try oper_cwidth 160 MHz first then VHT 80 MHz, if 160 MHz is
 		 * not supported.
 		 */
-		conf->vht_oper_chwidth = CHANWIDTH_160MHZ;
-		center_chan = wpas_p2p_get_vht160_center(wpa_s, mode, channel);
+		hostapd_set_oper_chwidth(conf, CHANWIDTH_160MHZ);
+		ieee80211_freq_to_channel_ext(ssid->frequency, 0,
+					      conf->vht_oper_chwidth,
+					      &conf->op_class,
+					      &conf->channel);
+		center_chan = wpas_p2p_get_vht160_center(wpa_s, mode, channel,
+							 conf->op_class);
 		if (center_chan && is_chanwidth160_supported(mode, conf)) {
 			wpa_printf(MSG_DEBUG,
 				   "VHT center channel %u for auto-selected 160 MHz bandwidth",
 				   center_chan);
 		} else {
-			conf->vht_oper_chwidth = CHANWIDTH_80MHZ;
+			hostapd_set_oper_chwidth(conf, CHANWIDTH_80MHZ);
+			ieee80211_freq_to_channel_ext(ssid->frequency, 0,
+						      conf->vht_oper_chwidth,
+						      &conf->op_class,
+						      &conf->channel);
 			center_chan = wpas_p2p_get_vht80_center(wpa_s, mode,
-								channel);
+								channel,
+								conf->op_class);
 			wpa_printf(MSG_DEBUG,
 				   "VHT center channel %u for auto-selected 80 MHz bandwidth",
 				   center_chan);
@@ -136,9 +151,9 @@ static void wpas_conf_ap_vht(struct wpa_supplicant *wpa_s,
 	if (!center_chan)
 		goto no_vht;
 
-	conf->vht_oper_centr_freq_seg0_idx = center_chan;
+	hostapd_set_oper_centr_freq_seg0_idx(conf, center_chan);
 	wpa_printf(MSG_DEBUG, "VHT seg0 index %d for P2P GO",
-		   conf->vht_oper_centr_freq_seg0_idx);
+		   hostapd_get_oper_centr_freq_seg0_idx(conf));
 	return;
 #endif /* CONFIG_P2P */
 
@@ -146,9 +161,9 @@ no_vht:
 	wpa_printf(MSG_DEBUG,
 		   "No VHT higher bandwidth support for the selected channel %d",
 		   conf->channel);
-	conf->vht_oper_centr_freq_seg0_idx =
-		conf->channel + conf->secondary_channel * 2;
-	conf->vht_oper_chwidth = CHANWIDTH_USE_HT;
+	hostapd_set_oper_centr_freq_seg0_idx(
+		conf, conf->channel + conf->secondary_channel * 2);
+	hostapd_set_oper_chwidth(conf, CHANWIDTH_USE_HT);
 }
 
 
@@ -156,9 +171,15 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 			      struct wpa_ssid *ssid,
 			      struct hostapd_config *conf)
 {
-	conf->hw_mode = ieee80211_freq_to_chan(ssid->frequency,
-					       &conf->channel);
-
+	conf->hw_mode = ieee80211_freq_to_channel_ext(ssid->frequency, 0,
+						      ssid->max_oper_chwidth,
+						      &conf->op_class,
+						      &conf->channel);
+	/* ssid->max_oper_chwidth is not valid in all cases, so fall back to the
+	 * less specific mechanism, if needed, at least for now */
+	if (conf->hw_mode == NUM_HOSTAPD_MODES)
+		conf->hw_mode = ieee80211_freq_to_chan(ssid->frequency,
+						       &conf->channel);
 	if (conf->hw_mode == NUM_HOSTAPD_MODES) {
 		wpa_printf(MSG_ERROR, "Unsupported AP mode frequency: %d MHz",
 			   ssid->frequency);
@@ -182,12 +203,8 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 			   "Determining HT/VHT options based on driver capabilities (freq=%u chan=%u)",
 			   ssid->frequency, conf->channel);
 
-		for (i = 0; i < wpa_s->hw.num_modes; i++) {
-			if (wpa_s->hw.modes[i].mode == conf->hw_mode) {
-				mode = &wpa_s->hw.modes[i];
-				break;
-			}
-		}
+		mode = get_mode(wpa_s->hw.modes, wpa_s->hw.num_modes,
+				conf->hw_mode, is_6ghz_freq(ssid->frequency));
 
 #ifdef CONFIG_HT_OVERRIDES
 		if (ssid->disable_ht)
@@ -252,16 +269,19 @@ int wpa_supplicant_conf_ap_ht(struct wpa_supplicant *wpa_s,
 				 HT_CAP_INFO_TX_STBC |
 				 HT_CAP_INFO_MAX_AMSDU_SIZE);
 
+			/* check this before VHT, because setting oper chan
+			 * width and friends is the same call for HE and VHT
+			 * and checks if conf->ieee8021ax == 1 */
+			if (mode->he_capab[wpas_mode_to_ieee80211_mode(
+					    ssid->mode)].he_supported &&
+			    ssid->he)
+				conf->ieee80211ax = 1;
+
 			if (mode->vht_capab && ssid->vht) {
 				conf->ieee80211ac = 1;
 				conf->vht_capab |= mode->vht_capab;
 				wpas_conf_ap_vht(wpa_s, ssid, conf, mode);
 			}
-
-			if (mode->he_capab[wpas_mode_to_ieee80211_mode(
-					    ssid->mode)].he_supported &&
-			    ssid->he)
-				conf->ieee80211ax = 1;
 		}
 	}
 
@@ -818,6 +838,8 @@ int wpa_supplicant_create_ap(struct wpa_supplicant *wpa_s,
 	params.wpa_proto = ssid->proto;
 	if (ssid->key_mgmt & WPA_KEY_MGMT_PSK)
 		wpa_s->key_mgmt = WPA_KEY_MGMT_PSK;
+	else if (ssid->key_mgmt & WPA_KEY_MGMT_SAE)
+		wpa_s->key_mgmt = WPA_KEY_MGMT_SAE;
 	else
 		wpa_s->key_mgmt = WPA_KEY_MGMT_NONE;
 	params.key_mgmt_suite = wpa_s->key_mgmt;
