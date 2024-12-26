@@ -16,6 +16,7 @@
 
 #include "utils/common.h"
 #include "common/wpa_ctrl.h"
+#include "common/nan_de.h"
 #include "config.h"
 #include "wpa_supplicant_i.h"
 #include "wps_supplicant.h"
@@ -127,6 +128,8 @@ void wpas_notify_state_changed(struct wpa_supplicant *wpa_s,
 			       enum wpa_states new_state,
 			       enum wpa_states old_state)
 {
+	struct wpa_ssid *ssid = wpa_s->current_ssid;
+
 	if (wpa_s->p2p_mgmt)
 		return;
 
@@ -143,10 +146,14 @@ void wpas_notify_state_changed(struct wpa_supplicant *wpa_s,
 	}
 #endif /* CONFIG_FST */
 
-	if (new_state == WPA_COMPLETED)
+	if (new_state == WPA_COMPLETED) {
 		wpas_p2p_notif_connected(wpa_s);
-	else if (old_state >= WPA_ASSOCIATED && new_state < WPA_ASSOCIATED)
+		if (ssid)
+			wpa_drv_roaming(wpa_s, !ssid->bssid_set,
+					ssid->bssid_set ? ssid->bssid : NULL);
+	} else if (old_state >= WPA_ASSOCIATED && new_state < WPA_ASSOCIATED) {
 		wpas_p2p_notif_disconnected(wpa_s);
+	}
 
 	sme_state_changed(wpa_s);
 
@@ -902,6 +909,18 @@ void wpas_notify_p2p_invitation_received(struct wpa_supplicant *wpa_s,
 						 id, op_freq);
 }
 
+void wpas_notify_p2p_bootstrap_req(struct wpa_supplicant *wpa_s,
+				   const u8 *src, u16 bootstrap_method)
+{
+	wpas_dbus_signal_p2p_bootstrap_req(wpa_s, src, bootstrap_method);
+}
+
+void wpas_notify_p2p_bootstrap_completed(struct wpa_supplicant *wpa_s,
+					 const u8 *src, int status)
+{
+	wpas_dbus_signal_p2p_bootstrap_completed(wpa_s, src, status);
+}
+
 #endif /* CONFIG_P2P */
 
 
@@ -1134,6 +1153,109 @@ void wpas_notify_hs20_rx_terms_and_conditions_acceptance(
 	wpas_aidl_notify_hs20_rx_terms_and_conditions_acceptance(wpa_s, url);
 #endif /* CONFIG_HS20 */
 }
+
+
+#ifdef CONFIG_NAN_USD
+
+void wpas_notify_nan_discovery_result(struct wpa_supplicant *wpa_s,
+				      enum nan_service_protocol_type
+				      srv_proto_type,
+				      int subscribe_id, int peer_publish_id,
+				      const u8 *peer_addr,
+				      bool fsd, bool fsd_gas,
+				      const u8 *ssi, size_t ssi_len)
+{
+	char *ssi_hex;
+
+	ssi_hex = os_zalloc(2 * ssi_len + 1);
+	if (!ssi_hex)
+		return;
+	if (ssi)
+		wpa_snprintf_hex(ssi_hex, 2 * ssi_len + 1, ssi, ssi_len);
+	wpa_msg(wpa_s, MSG_INFO, NAN_DISCOVERY_RESULT
+		"subscribe_id=%d publish_id=%d address=" MACSTR
+		" fsd=%d fsd_gas=%d srv_proto_type=%u ssi=%s",
+		subscribe_id, peer_publish_id, MAC2STR(peer_addr),
+		fsd, fsd_gas, srv_proto_type, ssi_hex);
+	os_free(ssi_hex);
+}
+
+
+void wpas_notify_nan_replied(struct wpa_supplicant *wpa_s,
+			     enum nan_service_protocol_type srv_proto_type,
+			     int publish_id, int peer_subscribe_id,
+			     const u8 *peer_addr,
+			     const u8 *ssi, size_t ssi_len)
+{
+	char *ssi_hex;
+
+	ssi_hex = os_zalloc(2 * ssi_len + 1);
+	if (!ssi_hex)
+		return;
+	if (ssi)
+		wpa_snprintf_hex(ssi_hex, 2 * ssi_len + 1, ssi, ssi_len);
+	wpa_msg(wpa_s, MSG_INFO, NAN_REPLIED
+		"publish_id=%d address=" MACSTR
+		" subscribe_id=%d srv_proto_type=%u ssi=%s",
+		publish_id, MAC2STR(peer_addr), peer_subscribe_id,
+		srv_proto_type, ssi_hex);
+	os_free(ssi_hex);
+}
+
+
+void wpas_notify_nan_receive(struct wpa_supplicant *wpa_s, int id,
+			     int peer_instance_id, const u8 *peer_addr,
+			     const u8 *ssi, size_t ssi_len)
+{
+	char *ssi_hex;
+
+	ssi_hex = os_zalloc(2 * ssi_len + 1);
+	if (!ssi_hex)
+		return;
+	if (ssi)
+		wpa_snprintf_hex(ssi_hex, 2 * ssi_len + 1, ssi, ssi_len);
+	wpa_msg(wpa_s, MSG_INFO, NAN_RECEIVE
+		"id=%d peer_instance_id=%d address=" MACSTR " ssi=%s",
+		id, peer_instance_id, MAC2STR(peer_addr), ssi_hex);
+	os_free(ssi_hex);
+}
+
+
+static const char * nan_reason_txt(enum nan_de_reason reason)
+{
+	switch (reason) {
+	case NAN_DE_REASON_TIMEOUT:
+		return "timeout";
+	case NAN_DE_REASON_USER_REQUEST:
+		return "user-request";
+	case NAN_DE_REASON_FAILURE:
+		return "failure";
+	}
+
+	return "unknown";
+}
+
+
+void wpas_notify_nan_publish_terminated(struct wpa_supplicant *wpa_s,
+					int publish_id,
+					enum nan_de_reason reason)
+{
+	wpa_msg(wpa_s, MSG_INFO, NAN_PUBLISH_TERMINATED
+		"publish_id=%d reason=%s",
+		publish_id, nan_reason_txt(reason));
+}
+
+
+void wpas_notify_nan_subscribe_terminated(struct wpa_supplicant *wpa_s,
+					  int subscribe_id,
+					  enum nan_de_reason reason)
+{
+	wpa_msg(wpa_s, MSG_INFO, NAN_SUBSCRIBE_TERMINATED
+		"subscribe_id=%d reason=%s",
+		subscribe_id, nan_reason_txt(reason));
+}
+
+#endif /* CONFIG_NAN_USD */
 
 #ifdef CONFIG_MESH
 

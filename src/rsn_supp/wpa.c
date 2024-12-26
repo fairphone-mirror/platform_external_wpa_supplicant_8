@@ -737,7 +737,7 @@ static size_t wpa_mlo_link_kde_len(struct wpa_sm *sm)
 	int i;
 	unsigned int num_links = 0;
 
-	for (i = 0; i < MAX_NUM_MLO_LINKS; i++) {
+	for (i = 0; i < MAX_NUM_MLD_LINKS; i++) {
 		if (sm->mlo.assoc_link_id != i && (sm->mlo.req_links & BIT(i)))
 			num_links++;
 	}
@@ -751,7 +751,7 @@ static u8 * wpa_mlo_link_kde(struct wpa_sm *sm, u8 *pos)
 	int i;
 	u8 hdr[1 + ETH_ALEN];
 
-	for (i = 0; i < MAX_NUM_MLO_LINKS; i++) {
+	for (i = 0; i < MAX_NUM_MLD_LINKS; i++) {
 		if (sm->mlo.assoc_link_id == i || !(sm->mlo.req_links & BIT(i)))
 			continue;
 
@@ -769,7 +769,7 @@ static u8 * wpa_mlo_link_kde(struct wpa_sm *sm, u8 *pos)
 static bool is_valid_ap_mld_mac_kde(struct wpa_sm *sm, const u8 *mac_kde)
 {
 	return mac_kde &&
-		os_memcmp(mac_kde, sm->mlo.ap_mld_addr, ETH_ALEN) == 0;
+		ether_addr_equal(mac_kde, sm->mlo.ap_mld_addr);
 }
 
 
@@ -1497,7 +1497,7 @@ static int wpa_supplicant_pairwise_mlo_gtk(struct wpa_sm *sm,
 {
 	u8 i;
 
-	for (i = 0; i < MAX_NUM_MLO_LINKS; i++) {
+	for (i = 0; i < MAX_NUM_MLD_LINKS; i++) {
 		if (!(sm->mlo.valid_links & BIT(i)))
 			continue;
 
@@ -1849,7 +1849,7 @@ static int mlo_ieee80211w_set_keys(struct wpa_sm *sm,
 	    sm->mgmt_group_cipher == WPA_CIPHER_GTK_NOT_USED)
 		return 0;
 
-	for (i = 0; i < MAX_NUM_MLO_LINKS; i++) {
+	for (i = 0; i < MAX_NUM_MLD_LINKS; i++) {
 		if (!(sm->mlo.valid_links & BIT(i)))
 			continue;
 
@@ -2236,9 +2236,8 @@ static int wpa_supplicant_validate_link_kde(struct wpa_sm *sm, u8 link_id,
 		return -1;
 	}
 
-	if (os_memcmp(sm->mlo.links[link_id].bssid,
-		      &link_kde[RSN_MLO_LINK_KDE_LINK_MAC_INDEX],
-		      ETH_ALEN) != 0) {
+	if (!ether_addr_equal(sm->mlo.links[link_id].bssid,
+			      &link_kde[RSN_MLO_LINK_KDE_LINK_MAC_INDEX])) {
 		wpa_msg(sm->ctx->msg_ctx, MSG_INFO,
 			"RSN: MLO Link %u MAC address (" MACSTR
 			") not matching association response (" MACSTR ")",
@@ -2820,7 +2819,7 @@ static void wpa_supplicant_process_mlo_1_of_2(struct wpa_sm *sm,
 		wpa_msg(sm->ctx->msg_ctx, MSG_INFO,
 			"MLO RSN: Failed to configure MLO IGTK");
 
-	for (i = 0; i < MAX_NUM_MLO_LINKS; i++) {
+	for (i = 0; i < MAX_NUM_MLD_LINKS; i++) {
 		if (!(sm->mlo.valid_links & BIT(i)))
 			continue;
 
@@ -3501,7 +3500,8 @@ static int wpa_sm_rx_eapol_wpa(struct wpa_sm *sm, const u8 *src_addr,
  * @buf: Pointer to the beginning of the EAPOL data (EAPOL header)
  * @len: Length of the EAPOL frame
  * @encrypted: Whether the frame was encrypted
- * Returns: 1 = WPA EAPOL-Key processed, 0 = not a WPA EAPOL-Key, -1 failure
+ * Returns: 1 = WPA EAPOL-Key processed, 0 = not a WPA EAPOL-Key, -1 failure,
+ *	    -2 = reply counter did not increase.
  *
  * This function is called for each received EAPOL frame. Other than EAPOL-Key
  * frames can be skipped if filtering is done elsewhere. wpa_sm_rx_eapol() is
@@ -3610,6 +3610,7 @@ int wpa_sm_rx_eapol(struct wpa_sm *sm, const u8 *src_addr,
 		      WPA_REPLAY_COUNTER_LEN) <= 0) {
 		wpa_msg(sm->ctx->msg_ctx, MSG_WARNING,
 			"WPA: EAPOL-Key Replay Counter did not increase - dropping packet");
+		ret = -2;
 		goto out;
 	}
 
@@ -4121,7 +4122,7 @@ void wpa_sm_notify_assoc(struct wpa_sm *sm, const u8 *bssid)
 	os_memset(sm->rx_replay_counter, 0, WPA_REPLAY_COUNTER_LEN);
 	sm->rx_replay_counter_set = 0;
 	sm->renew_snonce = 1;
-	if (os_memcmp(sm->preauth_bssid, bssid, ETH_ALEN) == 0)
+	if (ether_addr_equal(sm->preauth_bssid, bssid))
 		rsn_preauth_deinit(sm);
 
 #ifdef CONFIG_IEEE80211R
@@ -5026,6 +5027,25 @@ struct rsn_pmksa_cache_entry * wpa_sm_pmksa_cache_get(struct wpa_sm *sm,
 {
 	return pmksa_cache_get(sm->pmksa, aa, sm->own_addr, pmkid, network_ctx,
 			       akmp);
+}
+
+
+int wpa_sm_pmksa_get_pmk(struct wpa_sm *sm, const u8 *aa, const u8 **pmk,
+			 size_t *pmk_len, const u8 **pmkid)
+{
+	struct rsn_pmksa_cache_entry *pmksa;
+
+	pmksa = wpa_sm_pmksa_cache_get(sm, aa, NULL, NULL, 0);
+	if (!pmksa) {
+		wpa_printf(MSG_DEBUG, "RSN: Failed to get PMKSA for " MACSTR,
+			   MAC2STR(aa));
+		return -1;
+	}
+
+	*pmk = pmksa->pmk;
+	*pmk_len = pmksa->pmk_len;
+	*pmkid = pmksa->pmkid;
+	return 0;
 }
 
 

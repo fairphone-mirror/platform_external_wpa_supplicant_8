@@ -65,6 +65,7 @@
 #include "wpas_kay.h"
 #include "mesh.h"
 #include "dpp_supplicant.h"
+#include "nan_usd.h"
 #ifdef CONFIG_MESH
 #include "ap/ap_config.h"
 #include "ap/hostapd.h"
@@ -746,6 +747,10 @@ static void wpa_supplicant_cleanup(struct wpa_supplicant *wpa_s)
 	dpp_global_deinit(wpa_s->dpp);
 	wpa_s->dpp = NULL;
 #endif /* CONFIG_DPP */
+
+#ifdef CONFIG_NAN_USD
+	wpas_nan_usd_deinit(wpa_s);
+#endif /* CONFIG_NAN_USD */
 
 #ifdef CONFIG_PASN
 	wpas_pasn_auth_stop(wpa_s);
@@ -2084,9 +2089,9 @@ int wpa_supplicant_set_suites(struct wpa_supplicant *wpa_s,
 		    (ssid->sae_password || ssid->passphrase || ssid->ext_psk))
 			psk_set = 1;
 
-		if (!psk_set) {
+		if (!psk_set && !ssid->pmk_valid) {
 			wpa_msg(wpa_s, MSG_INFO,
-				"No PSK available for association");
+				"No PSK/PMK available for association");
 			wpas_auth_failed(wpa_s, "NO_PSK_AVAILABLE", NULL);
 			return -1;
 		}
@@ -2212,6 +2217,8 @@ static void wpas_ext_capab_byte(struct wpa_supplicant *wpa_s, u8 *pos, int idx,
 		if (!wpa_s->disable_fils)
 			*pos |= 0x01;
 #endif /* CONFIG_FILS */
+		if (wpa_s->conf->twt_requester)
+			*pos |= 0x20; /* Bit 77 - TWT Requester Support */
 		break;
 	case 10: /* Bits 80-87 */
 #ifdef CONFIG_TESTING_OPTIONS
@@ -2344,8 +2351,7 @@ int wpas_update_random_addr(struct wpa_supplicant *wpa_s,
 		if (style == WPAS_MAC_ADDR_STYLE_DEDICATED_PER_ESS) {
 			/* Pregenerated addresses do not expire but their value
 			 * might have changed, so let's check that. */
-			if (os_memcmp(wpa_s->own_addr, ssid->mac_value,
-				      ETH_ALEN) == 0)
+			if (ether_addr_equal(wpa_s->own_addr, ssid->mac_value))
 				return 0;
 		} else if ((wpa_s->last_mac_addr_change.sec != 0 ||
 			    wpa_s->last_mac_addr_change.usec != 0) &&
@@ -2396,6 +2402,8 @@ int wpas_update_random_addr(struct wpa_supplicant *wpa_s,
 			"Could not update MAC address information");
 		return -1;
 	}
+
+	wpas_p2p_update_dev_addr(wpa_s);
 
 	wpa_msg(wpa_s, MSG_DEBUG, "Using random MAC address " MACSTR,
 		MAC2STR(addr));
@@ -2487,6 +2495,9 @@ int wpas_restore_permanent_mac_addr(struct wpa_supplicant *wpa_s)
 			"Could not update MAC address information");
 		return -1;
 	}
+
+	wpas_p2p_update_dev_addr(wpa_s);
+
 	wpa_msg(wpa_s, MSG_DEBUG, "Using permanent MAC address");
 	return 0;
 }
@@ -5388,14 +5399,14 @@ struct wpa_ssid * wpa_supplicant_get_ssid(struct wpa_supplicant *wpa_s)
 		       os_memcmp(ssid, entry->ssid, ssid_len) == 0)) ||
 		     wired) &&
 		    (!entry->bssid_set ||
-		     os_memcmp(bssid, entry->bssid, ETH_ALEN) == 0))
+		     ether_addr_equal(bssid, entry->bssid)))
 			return entry;
 #ifdef CONFIG_WPS
 		if (!wpas_network_disabled(wpa_s, entry) &&
 		    (entry->key_mgmt & WPA_KEY_MGMT_WPS) &&
 		    (entry->ssid == NULL || entry->ssid_len == 0) &&
 		    (!entry->bssid_set ||
-		     os_memcmp(bssid, entry->bssid, ETH_ALEN) == 0))
+		     ether_addr_equal(bssid, entry->bssid)))
 			return entry;
 #endif /* CONFIG_WPS */
 
@@ -5405,13 +5416,13 @@ struct wpa_ssid * wpa_supplicant_get_ssid(struct wpa_supplicant *wpa_s)
 		     owe_trans_ssid_match(wpa_s, bssid, entry->ssid,
 					  entry->ssid_len)) &&
 		    (!entry->bssid_set ||
-		     os_memcmp(bssid, entry->bssid, ETH_ALEN) == 0))
+		     ether_addr_equal(bssid, entry->bssid)))
 			return entry;
 #endif /* CONFIG_OWE */
 
 		if (!wpas_network_disabled(wpa_s, entry) && entry->bssid_set &&
 		    entry->ssid_len == 0 &&
-		    os_memcmp(bssid, entry->bssid, ETH_ALEN) == 0)
+		    ether_addr_equal(bssid, entry->bssid))
 			return entry;
 
 		entry = entry->next;
@@ -5539,7 +5550,7 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 #ifdef CONFIG_AP
 	     !wpa_s->ap_iface &&
 #endif /* CONFIG_AP */
-	     os_memcmp(src_addr, connected_addr, ETH_ALEN) != 0)) {
+	     !ether_addr_equal(src_addr, connected_addr))) {
 		/*
 		 * There is possible race condition between receiving the
 		 * association event and the EAPOL frame since they are coming
@@ -5557,6 +5568,7 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 			MACSTR ")",
 			wpa_supplicant_state_txt(wpa_s->wpa_state),
 			MAC2STR(connected_addr));
+	delay_processing:
 		wpabuf_free(wpa_s->pending_eapol_rx);
 		wpa_s->pending_eapol_rx = wpabuf_alloc_copy(buf, len);
 		if (wpa_s->pending_eapol_rx) {
@@ -5569,7 +5581,7 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 	}
 
 	wpa_s->last_eapol_matches_bssid =
-		os_memcmp(src_addr, connected_addr, ETH_ALEN) == 0;
+		ether_addr_equal(src_addr, connected_addr);
 
 #ifdef CONFIG_AP
 	if (wpa_s->ap_iface) {
@@ -5654,9 +5666,23 @@ void wpa_supplicant_rx_eapol(void *ctx, const u8 *src_addr,
 			      encrypted) > 0)
 		return;
 	wpa_drv_poll(wpa_s);
-	if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE_PSK))
-		wpa_sm_rx_eapol(wpa_s->wpa, src_addr, buf, len, encrypted);
-	else if (wpa_key_mgmt_wpa_ieee8021x(wpa_s->key_mgmt)) {
+	if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE_PSK)) {
+		if (wpa_sm_rx_eapol(wpa_s->wpa, src_addr, buf, len,
+				    encrypted) == -2 &&
+#ifdef CONFIG_AP
+		    !wpa_s->ap_iface &&
+#endif /* CONFIG_AP */
+		    wpa_s->last_eapol_matches_bssid) {
+			/* Handle the case where reassociation occurs to the
+			 * current connected AP */
+			wpa_dbg(wpa_s, MSG_DEBUG,
+				"Delay processing of received EAPOL frame for reassociation to the current connected AP (state=%s connected_addr="
+				MACSTR ")",
+				wpa_supplicant_state_txt(wpa_s->wpa_state),
+				MAC2STR(connected_addr));
+			goto delay_processing;
+		}
+	} else if (wpa_key_mgmt_wpa_ieee8021x(wpa_s->key_mgmt)) {
 		/*
 		 * Set portValid = true here since we are going to skip 4-way
 		 * handshake processing which would normally set portValid. We
@@ -5726,7 +5752,7 @@ int wpa_supplicant_update_mac_addr(struct wpa_supplicant *wpa_s)
 		fst_update_mac_addr(wpa_s->fst, wpa_s->own_addr);
 #endif /* CONFIG_FST */
 
-	if (os_memcmp(prev_mac_addr, wpa_s->own_addr, ETH_ALEN) != 0)
+	if (!ether_addr_equal(prev_mac_addr, wpa_s->own_addr))
 		wpas_notify_mac_address_changed(wpa_s);
 
 	return 0;
@@ -5743,7 +5769,7 @@ static void wpa_supplicant_rx_eapol_bridge(void *ctx, const u8 *src_addr,
 		return;
 	eth = (const struct l2_ethhdr *) buf;
 
-	if (os_memcmp(eth->h_dest, wpa_s->own_addr, ETH_ALEN) != 0 &&
+	if (!ether_addr_equal(eth->h_dest, wpa_s->own_addr) &&
 	    !(eth->h_dest[0] & 0x01)) {
 		wpa_dbg(wpa_s, MSG_DEBUG, "RX EAPOL from " MACSTR " to " MACSTR
 			" (bridge - not for this interface - ignore)",
@@ -6432,7 +6458,7 @@ static int wpas_fst_send_action_cb(void *ctx, const u8 *da, struct wpabuf *data)
 {
 	struct wpa_supplicant *wpa_s = ctx;
 
-	if (os_memcmp(wpa_s->bssid, da, ETH_ALEN) != 0) {
+	if (!ether_addr_equal(wpa_s->bssid, da)) {
 		wpa_printf(MSG_INFO, "FST:%s:bssid=" MACSTR " != da=" MACSTR,
 			   __func__, MAC2STR(wpa_s->bssid), MAC2STR(da));
 		return -1;
@@ -6448,7 +6474,7 @@ static const struct wpabuf * wpas_fst_get_mb_ie_cb(void *ctx, const u8 *addr)
 {
 	struct wpa_supplicant *wpa_s = ctx;
 
-	WPA_ASSERT(os_memcmp(wpa_s->bssid, addr, ETH_ALEN) == 0);
+	WPA_ASSERT(ether_addr_equal(wpa_s->bssid, addr));
 	return wpa_s->received_mb_ies;
 }
 
@@ -6459,7 +6485,7 @@ static void wpas_fst_update_mb_ie_cb(void *ctx, const u8 *addr,
 	struct wpa_supplicant *wpa_s = ctx;
 	struct mb_ies_info info;
 
-	WPA_ASSERT(os_memcmp(wpa_s->bssid, addr, ETH_ALEN) == 0);
+	WPA_ASSERT(ether_addr_equal(wpa_s->bssid, addr));
 
 	if (!mb_ies_info_by_ies(&info, buf, size)) {
 		wpabuf_free(wpa_s->received_mb_ies);
@@ -7383,6 +7409,11 @@ static int wpa_supplicant_init_iface(struct wpa_supplicant *wpa_s,
 	if (wpas_dpp_init(wpa_s) < 0)
 		return -1;
 #endif /* CONFIG_DPP */
+
+#ifdef CONFIG_NAN_USD
+	if (wpas_nan_usd_init(wpa_s) < 0)
+		return -1;
+#endif /* CONFIG_NAN_USD */
 
 	if (wpa_supplicant_init_eapol(wpa_s) < 0)
 		return -1;
@@ -8667,7 +8698,8 @@ int wpas_network_disabled(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid)
 
 	if (wpa_key_mgmt_wpa_psk(ssid->key_mgmt) && !ssid->psk_set &&
 	    (!ssid->passphrase || ssid->ssid_len != 0) && !ssid->ext_psk &&
-	    !(wpa_key_mgmt_sae(ssid->key_mgmt) && ssid->sae_password) &&
+	    !(wpa_key_mgmt_sae(ssid->key_mgmt) &&
+	      (ssid->sae_password || ssid->pmk_valid)) &&
 	    !ssid->mem_only_psk)
 		return 1;
 
@@ -8885,8 +8917,8 @@ int disallowed_bssid(struct wpa_supplicant *wpa_s, const u8 *bssid)
 		return 0;
 
 	for (i = 0; i < wpa_s->disallow_aps_bssid_count; i++) {
-		if (os_memcmp(wpa_s->disallow_aps_bssid + i * ETH_ALEN,
-			      bssid, ETH_ALEN) == 0)
+		if (ether_addr_equal(wpa_s->disallow_aps_bssid + i * ETH_ALEN,
+				     bssid))
 			return 1;
 	}
 
@@ -9196,7 +9228,7 @@ wpa_bss_tmp_disallowed * wpas_get_disallowed_bss(struct wpa_supplicant *wpa_s,
 
 	dl_list_for_each(bss, &wpa_s->bss_tmp_disallowed,
 			 struct wpa_bss_tmp_disallowed, list) {
-		if (os_memcmp(bssid, bss->bssid, ETH_ALEN) == 0)
+		if (ether_addr_equal(bssid, bss->bssid))
 			return bss;
 	}
 
@@ -9279,7 +9311,7 @@ int wpa_is_bss_tmp_disallowed(struct wpa_supplicant *wpa_s,
 
 	dl_list_for_each_safe(tmp, prev, &wpa_s->bss_tmp_disallowed,
 			 struct wpa_bss_tmp_disallowed, list) {
-		if (os_memcmp(bss->bssid, tmp->bssid, ETH_ALEN) == 0) {
+		if (ether_addr_equal(bss->bssid, tmp->bssid)) {
 			disallowed = tmp;
 			break;
 		}
@@ -9377,8 +9409,7 @@ int wpa_drv_signal_poll(struct wpa_supplicant *wpa_s,
 
 		dl_list_for_each(dso, &wpa_s->drv_signal_override,
 				 struct driver_signal_override, list) {
-			if (os_memcmp(wpa_s->bssid, dso->bssid,
-				      ETH_ALEN) != 0)
+			if (!ether_addr_equal(wpa_s->bssid, dso->bssid))
 				continue;
 			wpa_printf(MSG_DEBUG,
 				   "Override driver signal_poll information: current_signal: %d->%d avg_signal: %d->%d avg_beacon_signal: %d->%d current_noise: %d->%d",
@@ -9427,7 +9458,7 @@ wpa_drv_get_scan_results(struct wpa_supplicant *wpa_s, const u8 *bssid)
 
 		dl_list_for_each(dso, &wpa_s->drv_signal_override,
 				 struct driver_signal_override, list) {
-			if (os_memcmp(res->bssid, dso->bssid, ETH_ALEN) != 0)
+			if (!ether_addr_equal(res->bssid, dso->bssid))
 				continue;
 			wpa_printf(MSG_DEBUG,
 				   "Override driver scan signal level %d->%d for "
@@ -9460,7 +9491,7 @@ bool wpas_ap_link_address(struct wpa_supplicant *wpa_s, const u8 *addr)
 		if (!(wpa_s->valid_links & BIT(i)))
 			continue;
 
-		if (os_memcmp(wpa_s->links[i].bssid, addr, ETH_ALEN) == 0)
+		if (ether_addr_equal(wpa_s->links[i].bssid, addr))
 			return true;
 	}
 
