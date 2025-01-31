@@ -3249,10 +3249,13 @@ static void wpas_stop_listen(void *ctx)
 
 	wpas_p2p_listen_work_done(wpa_s);
 
-	if (radio_work_pending(wpa_s, "p2p-listen")) {
+	if (!wpa_s->p2p_removing_listen_work &&
+	    radio_work_pending(wpa_s, "p2p-listen")) {
+		wpa_s->p2p_removing_listen_work = true;
 		wpa_printf(MSG_DEBUG,
 			   "P2P: p2p-listen is still pending - remove it");
 		radio_remove_works(wpa_s, "p2p-listen", 0);
+		wpa_s->p2p_removing_listen_work = false;
 	}
 }
 
@@ -7299,6 +7302,10 @@ static int wpas_p2p_supported_freq_go(struct wpa_supplicant *wpa_s,
 				      const struct p2p_channels *channels,
 				      int freq)
 {
+	if (is_6ghz_freq(freq) &&
+	    !is_p2p_6ghz_capable(wpa_s->global->p2p))
+		return 0;
+
 	if (!wpas_p2p_disallowed_freq(wpa_s->global, freq) &&
 	    p2p_supported_freq_go(wpa_s->global->p2p, freq) &&
 	    freq_included(wpa_s, channels, freq))
