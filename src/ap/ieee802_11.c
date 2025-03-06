@@ -6952,6 +6952,8 @@ u8 * hostapd_eid_txpower_envelope(struct hostapd_data *hapd, u8 *eid)
 	 *	Unit interpretation = Regulatory client EIRP PSD
 	 */
 	if (is_6ghz_op_class(iconf->op_class)) {
+#if 0
+		/* duplicate with driver in file: qcacld-3.0/core/mac/src/pe/sch/sch_beacon_gen.c  */
 		enum max_tx_pwr_interpretation tx_pwr_intrpn;
 
 		/* Same Maximum Transmit Power for all 20 MHz bands */
@@ -6973,6 +6975,7 @@ u8 * hostapd_eid_txpower_envelope(struct hostapd_data *hapd, u8 *eid)
 						   REG_SUBORDINATE_CLIENT,
 						   tx_pwr);
 		}
+#endif
 
 		return eid;
 	}
