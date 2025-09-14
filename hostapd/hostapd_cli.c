@@ -1242,6 +1242,22 @@ static int hostapd_cli_cmd_update_beacon(struct wpa_ctrl *ctrl, int argc,
 }
 
 
+static int hostapd_cli_cmd_driver(struct wpa_ctrl *ctrl, int argc, char *argv[])
+{
+	char buf[4096];
+	int res;
+
+	if (argc < 1) {
+		printf("Invalid DRIVER command - at least 1 argument "
+		       "required.\n");
+		return -1;
+	}
+	if (write_cmd(buf, sizeof(buf), "DRIVER", argc, argv) < 0)
+		return -1;
+	return wpa_ctrl_command(ctrl, buf);
+}
+
+
 static int hostapd_cli_cmd_vendor(struct wpa_ctrl *ctrl, int argc, char *argv[])
 {
 	char cmd[256];
@@ -1570,14 +1586,6 @@ static int hostapd_cli_cmd_reload_wpa_psk(struct wpa_ctrl *ctrl, int argc,
 }
 
 
-#ifdef ANDROID
-static int hostapd_cli_cmd_driver(struct wpa_ctrl *ctrl, int argc, char *argv[])
-{
-	return hostapd_cli_cmd(ctrl, "DRIVER", 1, argc, argv);
-}
-#endif /* ANDROID */
-
-
 struct hostapd_cli_cmd {
 	const char *cmd;
 	int (*handler)(struct wpa_ctrl *ctrl, int argc, char *argv[]);
@@ -1688,6 +1696,9 @@ static const struct hostapd_cli_cmd hostapd_cli_commands[] = {
 	{ "vendor", hostapd_cli_cmd_vendor, NULL,
 	  "<vendor id> <sub command id> [<hex formatted data>]\n"
 	  "  = send vendor driver command" },
+	{ "driver", hostapd_cli_cmd_driver, NULL,
+	  "<driver sub command> [<hex formatted data>]\n"
+	  "  = send driver command data" },
 	{ "enable", hostapd_cli_cmd_enable, NULL,
 	  "= enable hostapd on current interface" },
 	{ "reload", hostapd_cli_cmd_reload, NULL,
@@ -1777,10 +1788,6 @@ static const struct hostapd_cli_cmd hostapd_cli_commands[] = {
 	  "<addr> [req_mode=] <measurement request hexdump>  = send a Beacon report request to a station" },
 	{ "reload_wpa_psk", hostapd_cli_cmd_reload_wpa_psk, NULL,
 	  "= reload wpa_psk_file only" },
-#ifdef ANDROID
-	{ "driver", hostapd_cli_cmd_driver, NULL,
-	  "<driver sub command> [<hex formatted data>] = send driver command data" },
-#endif /* ANDROID */
 	{ NULL, NULL, NULL, NULL }
 };
 

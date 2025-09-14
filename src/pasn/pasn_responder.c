@@ -335,6 +335,8 @@ pasn_derive_keys(struct pasn_data *pasn,
 		}
 	}
 
+	pasn->pmk_len = pmk_len;
+	os_memcpy(pasn->pmk, pmk, pmk_len);
 	ret = pasn_pmk_to_ptk(pmk, pmk_len, peer_addr, own_addr,
 			      wpabuf_head(secret), wpabuf_len(secret),
 			      &pasn->ptk, pasn->akmp,
@@ -586,7 +588,8 @@ fail:
 
 int handle_auth_pasn_1(struct pasn_data *pasn,
 		       const u8 *own_addr, const u8 *peer_addr,
-		       const struct ieee80211_mgmt *mgmt, size_t len)
+		       const struct ieee80211_mgmt *mgmt, size_t len,
+		       bool reject)
 {
 	struct ieee802_11_elems elems;
 	struct wpa_ie_data rsn_data;
@@ -604,6 +607,12 @@ int handle_auth_pasn_1(struct pasn_data *pasn,
 
 	if (!groups)
 		groups = default_groups;
+
+	if (reject) {
+		wpa_printf(MSG_DEBUG, "PASN: Received Rejection");
+		status = WLAN_STATUS_UNSPECIFIED_FAILURE;
+		goto send_resp;
+	}
 
 	if (ieee802_11_parse_elems(mgmt->u.auth.variable,
 				   len - offsetof(struct ieee80211_mgmt,

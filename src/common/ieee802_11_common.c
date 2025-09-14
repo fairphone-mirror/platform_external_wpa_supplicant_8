@@ -1800,6 +1800,7 @@ static int ieee80211_chan_to_freq_eu(u8 op_class, u8 chan)
 
 static int ieee80211_chan_to_freq_jp(u8 op_class, u8 chan)
 {
+	/* Table E-3 in IEEE Std 802.11-2020 - Operating classes in Japan */
 	switch (op_class) {
 	case 30: /* channels 1..13 */
 	case 56: /* channels 1..9; 40 MHz */
@@ -1823,14 +1824,14 @@ static int ieee80211_chan_to_freq_jp(u8 op_class, u8 chan)
 		if (chan < 34 || chan > 64)
 			return -1;
 		return 5000 + 5 * chan;
-	case 34: /* channels 100-140 */
-	case 35: /* channels 100-140 */
-	case 39: /* channels 100-132; 40 MHz */
-	case 40: /* channels 100-132; 40 MHz */
-	case 44: /* channels 104-136; 40 MHz */
-	case 45: /* channels 104-136; 40 MHz */
-	case 58: /* channels 100-140 */
-		if (chan < 100 || chan > 140)
+	case 34: /* channels 100-144 */
+	case 35: /* reserved */
+	case 39: /* channels 100-140; 40 MHz */
+	case 40: /* reserved */
+	case 44: /* channels 104-144; 40 MHz */
+	case 45: /* reserved */
+	case 58: /* channels 100-144 */
+		if (chan < 100 || chan > 144)
 			return -1;
 		return 5000 + 5 * chan;
 	case 59: /* 60 GHz band, channels 1..6 */
@@ -1884,7 +1885,7 @@ static int ieee80211_chan_to_freq_cn(u8 op_class, u8 chan)
 
 static int ieee80211_chan_to_freq_global(u8 op_class, u8 chan)
 {
-	/* Table E-4 in IEEE Std 802.11-2012 - Global operating classes */
+	/* Table E-4 in IEEE Std 802.11-2020 - Global operating classes */
 	switch (op_class) {
 	case 81:
 		/* channels 1..13 */
@@ -1910,10 +1911,10 @@ static int ieee80211_chan_to_freq_global(u8 op_class, u8 chan)
 		if (chan < 36 || chan > 64)
 			return -1;
 		return 5000 + 5 * chan;
-	case 121: /* channels 100-140 */
-	case 122: /* channels 100-142; 40 MHz */
-	case 123: /* channels 104-136; 40 MHz */
-		if (chan < 100 || chan > 140)
+	case 121: /* channels 100-144 */
+	case 122: /* channels 100-140; 40 MHz */
+	case 123: /* channels 104-144; 40 MHz */
+		if (chan < 100 || chan > 144)
 			return -1;
 		return 5000 + 5 * chan;
 	case 124: /* channels 149,153,157,161 */
@@ -2015,7 +2016,7 @@ int ieee80211_is_dfs(int freq, const struct hostapd_hw_modes *modes,
 
 	if (!modes || !num_modes)
 		return (freq >= 5260 && freq <= 5320) ||
-			(freq >= 5500 && freq <= 5700);
+			(freq >= 5500 && freq <= 5720);
 
 	for (i = 0; i < num_modes; i++) {
 		for (j = 0; j < modes[i].num_channels; j++) {
@@ -2036,6 +2037,13 @@ int ieee80211_is_dfs(int freq, const struct hostapd_hw_modes *modes,
 int is_dfs_global_op_class(u8 op_class)
 {
     return (op_class >= 118) && (op_class <= 123);
+}
+
+
+bool is_80plus_op_class(u8 op_class)
+{
+	/* Operating classes with "80+" behavior indication in Table E-4 */
+	return op_class == 130 || op_class == 135;
 }
 
 
@@ -2388,9 +2396,9 @@ const struct oper_class_map global_op_class[] = {
 	{ HOSTAPD_MODE_IEEE80211A, 118, 52, 64, 4, BW20, NO_P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 119, 52, 60, 8, BW40PLUS, NO_P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 120, 56, 64, 8, BW40MINUS, NO_P2P_SUPP },
-	{ HOSTAPD_MODE_IEEE80211A, 121, 100, 140, 4, BW20, NO_P2P_SUPP },
-	{ HOSTAPD_MODE_IEEE80211A, 122, 100, 132, 8, BW40PLUS, NO_P2P_SUPP },
-	{ HOSTAPD_MODE_IEEE80211A, 123, 104, 136, 8, BW40MINUS, NO_P2P_SUPP },
+	{ HOSTAPD_MODE_IEEE80211A, 121, 100, 144, 4, BW20, NO_P2P_SUPP },
+	{ HOSTAPD_MODE_IEEE80211A, 122, 100, 140, 8, BW40PLUS, NO_P2P_SUPP },
+	{ HOSTAPD_MODE_IEEE80211A, 123, 104, 144, 8, BW40MINUS, NO_P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 124, 149, 161, 4, BW20, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 125, 149, 177, 4, BW20, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 126, 149, 173, 8, BW40PLUS, P2P_SUPP },
@@ -2406,15 +2414,26 @@ const struct oper_class_map global_op_class[] = {
 	 * channel center frequency index value, but it happens to be a 20 MHz
 	 * channel and the channel number in the channel set would match the
 	 * value in for the frequency center.
+	 *
+	 * Operating class value pair 128 and 130 is used to describe a 80+80
+	 * MHz channel on the 5 GHz band. 130 is identified with "80+", so this
+	 * is encoded with two octets 130 and 128. Similarly, operating class
+	 * value pair 133 and 135 is used to describe a 80+80 MHz channel on
+	 * the 6 GHz band (135 being the one with "80+" indication). All other
+	 * operating classes listed here are used as 1-octet values.
 	 */
 	{ HOSTAPD_MODE_IEEE80211A, 128, 36, 177, 4, BW80, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 129, 36, 177, 4, BW160, P2P_SUPP },
+	{ HOSTAPD_MODE_IEEE80211A, 130, 36, 177, 4, BW80P80, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 131, 1, 233, 4, BW20, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 132, 1, 233, 8, BW40, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 133, 1, 233, 16, BW80, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 134, 1, 233, 32, BW160, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 135, 1, 233, 16, BW80P80, NO_P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211A, 136, 2, 2, 4, BW20, NO_P2P_SUPP },
+
+	/* IEEE P802.11be/D5.0, Table E-4 (Global operating classes) */
+	{ HOSTAPD_MODE_IEEE80211A, 137, 31, 191, 32, BW320, NO_P2P_SUPP },
 
 	/*
 	 * IEEE Std 802.11ad-2012 and P802.ay/D5.0 60 GHz operating classes.
@@ -2426,11 +2445,6 @@ const struct oper_class_map global_op_class[] = {
 	{ HOSTAPD_MODE_IEEE80211AD, 182, 17, 20, 1, BW6480, P2P_SUPP },
 	{ HOSTAPD_MODE_IEEE80211AD, 183, 25, 27, 1, BW8640, P2P_SUPP },
 
-	/* Keep the operating class 130 as the last entry as a workaround for
-	 * the OneHundredAndThirty Delimiter value used in the Supported
-	 * Operating Classes element to indicate the end of the Operating
-	 * Classes field. */
-	{ HOSTAPD_MODE_IEEE80211A, 130, 36, 177, 4, BW80P80, P2P_SUPP },
 	{ -1, 0, 0, 0, 0, BW20, NO_P2P_SUPP }
 };
 
@@ -2737,6 +2751,8 @@ int oper_class_bw_to_int(const struct oper_class_map *map)
 	case BW80P80:
 	case BW160:
 		return 160;
+	case BW320:
+		return 320;
 	case BW2160:
 		return 2160;
 	default:
@@ -2832,6 +2848,21 @@ int get_6ghz_sec_channel(int channel)
 	if (((channel - 1) / 4) % 2)
 		return -1;
 	return 1;
+}
+
+
+bool is_same_band(int freq1, int freq2)
+{
+	if (IS_2P4GHZ(freq1) && IS_2P4GHZ(freq2))
+		return true;
+
+	if (IS_5GHZ(freq1) && IS_5GHZ(freq2))
+		return true;
+
+	if (is_6ghz_freq(freq1) && is_6ghz_freq(freq2))
+		return true;
+
+	return false;
 }
 
 
@@ -3065,10 +3096,10 @@ int op_class_to_bandwidth(u8 op_class)
 	case 119: /* channels 52,60; 40 MHz; dfs */
 	case 120: /* channels 56,64; 40 MHz; dfs */
 		return 40;
-	case 121: /* channels 100-140 */
+	case 121: /* channels 100-144 */
 		return 20;
-	case 122: /* channels 100-142; 40 MHz */
-	case 123: /* channels 104-136; 40 MHz */
+	case 122: /* channels 100-140; 40 MHz */
+	case 123: /* channels 104-144; 40 MHz */
 		return 40;
 	case 124: /* channels 149,153,157,161 */
 	case 125: /* channels 149,153,157,161,165,169,173,177 */
@@ -3128,10 +3159,10 @@ enum oper_chan_width op_class_to_ch_width(u8 op_class)
 	case 119: /* channels 52,60; 40 MHz; dfs */
 	case 120: /* channels 56,64; 40 MHz; dfs */
 		return CONF_OPER_CHWIDTH_USE_HT;
-	case 121: /* channels 100-140 */
+	case 121: /* channels 100-144 */
 		return CONF_OPER_CHWIDTH_USE_HT;
-	case 122: /* channels 100-142; 40 MHz */
-	case 123: /* channels 104-136; 40 MHz */
+	case 122: /* channels 100-140; 40 MHz */
+	case 123: /* channels 104-144; 40 MHz */
 		return CONF_OPER_CHWIDTH_USE_HT;
 	case 124: /* channels 149,153,157,161 */
 	case 125: /* channels 149,153,157,161,165,169,171 */
@@ -3646,4 +3677,51 @@ struct wpabuf * ieee802_11_defrag_mle(struct ieee802_11_elems *elems, u8 type)
 	}
 
 	return ieee802_11_defrag_data(data, len, true);
+}
+
+
+unsigned int is_ap_t2lm_negotiation_supported(const u8 *mle, size_t mle_len)
+{
+	u16 ml_control;
+	u16 mld_capabilities;
+	size_t offset =
+		2 /* Multi Link Control */ +
+		1 /* Common Info Length field */ +
+		ETH_ALEN /* MLD MAC Address field */;
+
+	if(!mle || mle_len < offset)
+	    return 0;
+
+	ml_control = WPA_GET_LE16(mle);
+	wpa_printf(MSG_DEBUG, "%s: ML control field 0x%x", __func__, ml_control);
+
+	if (!(ml_control & BASIC_MULTI_LINK_CTRL_PRES_MLD_CAPA)) {
+	    wpa_printf(MSG_DEBUG, "MLD capabilities not present");
+	    return 0;
+	}
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_LINK_ID)
+	    offset++;
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_BSS_PARAM_CH_COUNT)
+	    offset++;
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_MSD_INFO)
+	    offset += 2;
+
+	if (ml_control & BASIC_MULTI_LINK_CTRL_PRES_EML_CAPA)
+	    offset += 2;
+
+	if (mle_len < (offset + 2)) {
+	    wpa_printf(MSG_ERROR, "Not suffcient length for MLD capabilities");
+	    return 0;
+	}
+
+	mld_capabilities = WPA_GET_LE16(mle + offset);
+	wpa_printf(MSG_DEBUG, "MLD capabilities 0x%x", mld_capabilities);
+	if(!(mld_capabilities &
+	     EHT_ML_MLD_CAPA_TID_TO_LINK_MAP_NEG_SUPP_MSK))
+	    return 0;
+
+	return 1;
 }
