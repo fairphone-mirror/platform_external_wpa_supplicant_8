@@ -294,6 +294,7 @@ bool validatePassphrase(int passphrase_len, int min_len, int max_len)
 	return true;
 }
 
+/*
 std::string getInterfaceMacAddress(const std::string& if_name)
 {
 	u8 addr[ETH_ALEN] = {};
@@ -320,6 +321,7 @@ std::string getInterfaceMacAddress(const std::string& if_name)
 
 	return mac_addr;
 }
+*/
 
 std::string CreateHostapdConfig(
 	const IfaceParams& iface_params,
